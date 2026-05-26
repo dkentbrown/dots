@@ -770,3 +770,149 @@ Tests 2 (re-enable dilution) and 3 (build chants) are deferred. Decision: pivot 
 - HUD shows combined CCE across all colonies — should separate per-colony
 - Combat is deterministic — probabilistic variant discussed but not implemented
 - No monument_id on walls yet
+
+
+
+---
+
+## Session Notes — 2026-05-13 (cont., combat-walls design — observe + attack spec'd, defend pending)
+
+This session's design work, no code written. Handing off to Claude Code for implementation; this writeup is the spec.
+
+### Reframe: build was always about combat
+
+Recapping the 2026-05-12 framing for continuity. Monuments validated the build primitive's mechanics, but the gameplay purpose of `build_upward` is **fortification under attack**. Defense walls are the original Step 2 of the wall system (per 2026-05-09 notes); monuments are what build-CCE dots produce when there's no enemy around.
+
+This session designs the combat-walls mechanic from scratch, in the process introducing a new primitive (`observe`) and redesigning attack to fit the new model. Defend, wall banner mechanics, and combat-initiation details are partially specified and flagged below.
+
+### New primitive: Observe
+
+Standalone CCE primitive in the action pool. Weight, rolls like wander/attack/reproduce/etc. Conceptual role: the perception layer separate from the action layer. **Pure passive find** — no side effects beyond setting per-dot pending state.
+
+**Mechanic when rolled:**
+- Scans for nearest foreign dot in radius.
+- Radius scales with observe CCE: `OBSERVE_BASE_RADIUS + OBSERVE_SCALE * dot.cce.action.observe` cells.
+  - Suggested starting values: `OBSERVE_BASE_RADIUS = 3`, `OBSERVE_SCALE = 20`. Observe=0 → 3 cells, observe=0.5 → 13, observe=1.0 → 23. Tune.
+- Consumes the tick. No other action this tick.
+- Result stored on the dot for one tick: `{enemy: <dot or null>, expires_on_tick: current_tick + 1}`. Cleared on tick N+1 after the action resolves, regardless of whether it was used.
+
+**Stateless** — observation is per-dot, per-tick, no colony-shared marker. Each observe roll starts fresh. (This is a deliberate departure from a "spotter drops a marker" model; the rally banner system already provides colony-shared combat memory, no parallel mechanism needed for observation.)
+
+**The wiring that makes observe interesting:** observe's downstream effect depends on the dot's *other* CCE weights. Observe is the only primitive whose effect is not uniform — it finds, then on the next tick the dot's dominant observe-relevant CCE drives the action.
+
+**Tick N+1 action rule:**
+On the tick after an observe roll that found an enemy, **before the regular primitive roll**, the dot checks for a pending observation. If present:
+- Highest-weighted observe-relevant CCE drives the tick's action. Skips the normal primitive roll.
+- If `attack` dominates → march one cell toward the observed enemy (see Attack spec below).
+- If `defend` dominates AND the waller-trigger probability roll succeeds → drop wall banner, build block, climb on, lock (see Defend / Waller spec — pending).
+- If neither attack nor defend significant, or the waller-trigger probability fails → observation lapses, dot rolls normally on N+1.
+- Pending observation cleared at end of N+1 regardless of outcome.
+
+**Tie-break between attack and defend if equally weighted:** open question, flag for first implementation pass. Suggest random 50/50 until we see how it plays.
+
+**Consequence: 2-tick reaction delay on detection.**
+Today: attack rolls, scans, marches in one tick.
+Future: observe on N, march/drop-wall on N+1, next scan on N+2 (if observe rolls again).
+
+For an enemy at distance D, closing the gap takes ~2D ticks instead of D, since every other tick is a non-march observe. **First contact is slow, but escalation is fast** — once combat starts and rally banners drop, attack rolls march toward the banner on the *same* tick they roll (no observe delay needed for the rally path). Reads as: patrols are deliberate, fights are intense.
+
+This intentionally slows combat pace. Accept it, don't compensate. Gives time for wall deployment to matter.
+
+### Observe wires into all detection
+
+Today, `attack` does its own scan within `ATTACK_DETECT_RADIUS = 10`. Under the new model, observe is the **only** detection mechanism. Attack loses self-scan entirely; detection-driven attack behavior fires via the tick-N+1 hook above.
+
+This means **colonies need observe baseline to function**. Pure-attack-zero-observe colonies are blind — they never spot enemies, can only join fights via the rally banner path (which requires *someone* in the colony to have started a fight, which requires *someone* to have observed). Seed `COLONY0_CCE`, the enemy preset, and likely `NEUTRAL_CCE` with non-zero observe weights so colonies aren't useless at game start. Tuning values TBD; start by mirroring whatever attack weight a preset has.
+
+Design payoff: "intelligence" (chant alias for observe) becomes universally meaningful, not a niche stat. A high-intelligence pure-defender colony spots threats early. A high-intelligence attacker engages faster than a low-intelligence one. Etc.
+
+### Attack — pure march-toward-rally-banner primitive
+
+Under the new model, the attack primitive itself does almost nothing exciting. All the detection-and-pursue behavior moved to observe's tick-N+1 hook. Attack is now:
+
+**When the attack primitive fires (no pending observation):**
+- Friendly rally banner in `RALLY_RADIUS` → march one cell toward it. (Same as today's rally fallback.)
+- No rally banner in range → **inert**. The dot rolled attack and did nothing this tick.
+
+**Inert vs wander-fallback was a design decision.** Locked in inert. Reasoning: cleanest expression of "observe gates everything." Wander-fallback would muddy the line between attack and wander. A high-attack-zero-observe colony being helpless until they've stumbled into a fight is the intended consequence — reinforces that intelligence is universally valuable. The dot wasted a tick, that's fine, the engine is probabilistic, the next roll might be more useful.
+
+**Attack-with-pending-observation does NOT route through `_execute_attack`.** That path is the tick-N+1 hook: one cell toward the observed enemy, using `_is_foreign_in_exact_cell` (loose — can step adjacent, can't step onto a foreigner). No combat initiation inside this path either — that's the adjacency layer's job (see below, pending).
+
+**Combat initiation moves out of attack entirely.** Today `_execute_attack` calls `_initiate_combat` on contact. Future: `_initiate_combat` fires from the adjacency-triggers-combat layer (see pending section) whenever any motion primitive ends with the dot adjacent to a foreigner. Attack no longer owns combat initiation.
+
+**Cleanup needed in `_execute_attack` when this is implemented:** remove the self-scan, remove the call to `_march_toward` (only `_march_toward_banner` survives), remove the `_initiate_combat` call. `ATTACK_DETECT_RADIUS` constant becomes unused — leave for cleanup pass.
+
+### Waller-trigger probability shape (Shape D)
+
+When observe finds an enemy and defend dominates, the dot may trigger waller-drop. **Probability per qualifying observe roll**:
+
+```
+P(waller-drop) = clamp(dot.defend * dot.build_upward * WALLER_TRIGGER_SCALE, 0, 1)
+```
+
+- Pure-defender (defend=0.5, build=0.0) → 0% chance, never wallers.
+- Pure-builder (defend=0.0, build=0.5) → 0% chance, never wallers.
+- Balanced (defend=0.3, build=0.3) with SCALE=1.0 → 9% chance per observe-roll-that-finds-enemy.
+- Strong balanced (defend=0.6, build=0.6) with SCALE=1.0 → 36%.
+
+Tunable constant. Smooth interaction with chants (no thresholds, no cliffs). Matches engine pattern (everything is probabilistic, nothing is binary unlock).
+
+**Cost of D vs threshold:** guaranteed wall response is impossible. High-defend-high-build dots are *likely* to wall but not certain. Considered acceptable — combat is chaotic, not every defender drops everything.
+
+### Defend / wall banner / combat initiation — DESIGN PENDING
+
+Spec for these was in progress when the session ended. Below is what was locked plus open questions.
+
+**Locked:**
+- Wallers are dots where `defend * build_upward` rolled successful per Shape D above, *after* an observe roll found an enemy.
+- Waller-drop behavior at a high level: drop wall banner, build a half-thickness block in own cell oriented long-axis-toward-enemy, climb on top of the block, lock (no rolling any primitive including observe).
+- Wall block visually looks like a wall (thin, oriented along threat tangent), not a monument cube.
+- Other wallers respond to the wall banner by marching to it and placing their own blocks adjacent, extending the wall line perpendicular to the threat bearing.
+- Combat hits land on the wall first. When wall dies (combat or decay), the waller unlocks, drops back to surface (visual only — already at that cell), resumes normal rolling.
+
+**Open questions to resolve:**
+1. **Combat initiation under A2.** Decided in principle: any two foreign dots in adjacent cells initiate combat, regardless of which primitive either rolled. Two sub-questions deferred:
+   - **Sub-2a (foreign-cell-blocking):** today, `_is_blocked_by_foreign` (cell + 8 neighbors) blocks wander/reproduce/defend from stepping adjacent to foreigners; only attack's march uses the looser `_is_foreign_in_exact_cell`. Under A2, which primitives keep strict vs loose blocking? Proposed: all motion primitives go loose *except* reproduce-spawn-placement, which stays strict (don't spawn babies into combat). Not finalized.
+   - **Sub-2b (where adjacency check lives):** per-movement (each primitive checks at end of move) or per-tick global scan (one function at end of tick). Proposed: per-movement, composes better with new primitives. Not finalized.
+
+2. **Defend primitive under the new model.** Today defend = march toward colony center. With observe doing detection, does defend also gain an observe-driven branch (defend with pending observation → ???), or is defend's role purely "march home"? If wallers are the defend+observe interaction, what does pure-defend (high defend, low build) do when it observes an enemy? Tagged for next session.
+
+3. **Wall banner specifics.** Banner type separate from rally and build banners. Open: radius, TTL, how second-wallers orient their block relative to first-waller's, when the banner expires (wall complete? cap? threat gone?), what "complete" even means for a wall.
+
+4. **Wall banner vs build banner priority.** If a waller is in range of both an active wall banner and an active build banner, which wins? Lean: wall banner (combat is urgent). Not finalized.
+
+5. **Wall mesh + orientation.** Half-thickness compared to monument blocks. Orientation: long axis perpendicular to threat bearing (i.e., long axis parallel to a tangent perpendicular to the vector pointing at the enemy). Today wall meshes don't have orientation — they're axis-aligned cubes on the sphere. Implementing oriented walls means computing a local frame at the wall cell and rotating the mesh into it. Doable but new.
+
+6. **Combat-tick interaction.** Today `intensity > 0.7` shortens combat from 3 ticks to 2. Question raised: if defense walls are about *delaying* combat, intensity-shortened combat may be the thing they're racing against. Worth revisiting whether intensity-shortening should also apply to wall-mediated combat, or only to dot-on-dot.
+
+### Test environment needs
+
+To exercise combat-walls, enemy colony spawn must be re-enabled. Currently commented out for build dev (per 2026-05-09 notes). Uncomment `_spawn_enemy_colony()` and likely tune the enemy preset — current preset is attack 0.40, wander 0.40, reproduce 0.32, no observe. Under the new model that colony would be blind. Suggest seeding both colonies with `observe = 0.3` or so as a starting point.
+
+### Suggested implementation order
+
+1. Add `observe` to CCE schema, color system, neutral baseline, both colony presets. Wire into chant aliases ("observe", "intelligence", "watch", "scan", "intelligent").
+2. Implement observe primitive: roll, scan, set pending state. No downstream action yet — verify pending state appears and clears correctly via logging.
+3. Implement tick-N+1 pending-observation hook: for attack-dominant case, march toward enemy. Test with single-colony, enemy commented out (so observe always returns nothing — verify no crashes, observe rolls cleanly).
+4. Re-enable enemy colony. Verify observe finds them, attack-pending-observation marches toward them.
+5. Refactor `_execute_attack`: remove self-scan and `_initiate_combat` call, keep only rally-banner march. Add adjacency-triggers-combat layer (A2). Verify combat still initiates correctly, now via adjacency rather than attack.
+6. Design defend / wall banner / waller-drop sequence (this is the next design session, not next implementation step). Then implement.
+
+Steps 1–5 are the foundation. Step 6 is where wall mechanics actually appear. Splitting them keeps each commit focused and lets us validate the perception/action redesign before piling wall logic on top.
+
+### Files this design will eventually touch (forecast)
+
+- `main.gd`: new constants (`OBSERVE_BASE_RADIUS`, `OBSERVE_SCALE`, `WALLER_TRIGGER_SCALE`, wall-banner constants TBD), `observe` added to action CCE, `_execute_observe` and pending-state plumbing, tick-N+1 hook in `_tick_dot`, `_execute_attack` refactor, adjacency-triggers-combat layer, eventual waller-drop and wall-banner logic.
+- `CHANT_RECIPES`: observe/intelligence aliases.
+- Colony presets: add observe weights to `COLONY0_CCE`, enemy preset, `NEUTRAL_CCE`.
+
+### Known issues / TODO
+
+- Defend primitive design pending — interaction with observe TBD
+- Wall banner spec pending (radius, TTL, completion, priority vs build banner)
+- Wall mesh orientation logic doesn't exist yet
+- Combat initiation layer (A2) sub-questions pending (2a foreign-blocking, 2b check location)
+- Tie-break rule for equal attack/defend on observe-pending tick — currently spec'd as random 50/50
+- Enemy colony spawn still commented out — re-enable before combat-walls work begins
+- Both colony presets and `NEUTRAL_CCE` need observe weights added or colonies will be blind
+- Combat is deterministic; probabilistic combat still on the long-term list
