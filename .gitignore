@@ -22,3 +22,6 @@ chant.json
 
 # Test-mode build mechanic telemetry
 build_log.txt
+
+# MCP server config
+.mcp.json
