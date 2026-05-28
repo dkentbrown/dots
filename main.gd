@@ -153,6 +153,7 @@ const CHANT_RECIPES = {
 
 var dots = []
 var dot_data = {}
+var specks = []
 # dot_data[dot] = {
 #   "age": int,           # ticks lived, dies at DOT_LIFETIME
 #   "colony": int,        # colony ID
@@ -291,6 +292,7 @@ func _process(delta):
 		_tick_build_banners()
 		_tick_combat_clusters()
 		_tick_all_dots()
+		_tick_specks()
 		_update_hud()
 
 # --- Chant file ---
@@ -1152,6 +1154,27 @@ func _deep_copy_cce(source: Dictionary) -> Dictionary:
 		else:
 			copy[layer] = source[layer]
 	return copy
+
+# --- Soul specks ---
+
+func _create_speck(dir: Vector3) -> void:
+	var speck = MeshInstance3D.new()
+	var box = BoxMesh.new()
+	box.size = Vector3(0.008, 0.003, 0.008)
+	speck.mesh = box
+	var mat = StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.85, 0.2)
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.85, 0.2)
+	mat.emission_energy_multiplier = 1.2
+	speck.material_override = mat
+	speck.position = dir.normalized() * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
+	add_child(speck)
+	specks.append(speck)
+
+func _tick_specks() -> void:
+	if randf() < 0.5:
+		_create_speck(_cell_to_dir(Vector2i(randi() % GRID_RES, randi() % GRID_RES)))
 
 # --- Camera ---
 
