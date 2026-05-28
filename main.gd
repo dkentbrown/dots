@@ -49,6 +49,7 @@ const WALL_DECAY_TICKS = 300
 const WALL_MESH_SIZE = Vector3(0.031, 0.003, 0.031)  # match cell spacing so adjacent cells tile cleanly (TAU/GRID_RES \u2248 0.0314 at the equator)
 const WALL_HEIGHT_STEP = 0.003  # vertical spacing between stacked blocks (== mesh y-size)
 var wall_counts = {}  # colony_id -> current wall count
+var soul_pool = {}   # colony_id -> accumulated soul units
 
 # Build banners (anchored at a placed block, attracting nearby builders)
 const BUILD_BANNER_RADIUS = 15
@@ -364,7 +365,8 @@ func _update_hud():
 	sorted_keys.sort_custom(func(a, b): return totals[a] > totals[b])
 	var p1_count = colony_counts.get(ENEMY_COLONY, 0)
 	var p0_walls = wall_counts.get(LOCAL_COLONY, 0)
-	var lines = ["p0: %d (walls: %d)   p1: %d" % [count, p0_walls, p1_count]]
+	var p0_soul = soul_pool.get(LOCAL_COLONY, 0)
+	var lines = ["p0: %d (walls: %d, soul: %d)   p1: %d" % [count, p0_walls, p0_soul, p1_count]]
 	var shown = 0
 	for key in sorted_keys:
 		var avg = totals[key] / count
@@ -408,6 +410,8 @@ func _tick_all_dots():
 				if lock["speck"] in specks:
 					lock["speck"].queue_free()
 					specks.erase(lock["speck"])
+				var collector_colony = dot_data[dot]["colony"]
+				soul_pool[collector_colony] = soul_pool.get(collector_colony, 0) + 1
 				dot_data[dot]["collect_lock"] = null
 			continue
 		_tick_dot(dot)
