@@ -916,3 +916,71 @@ Steps 1–5 are the foundation. Step 6 is where wall mechanics actually appear. 
 - Enemy colony spawn still commented out — re-enable before combat-walls work begins
 - Both colony presets and `NEUTRAL_CCE` need observe weights added or colonies will be blind
 - Combat is deterministic; probabilistic combat still on the long-term list
+
+
+---
+
+## Session Notes — 2026-05-28
+
+### North Star architecture adopted
+
+Adopted the procedural-civ-primitives design report as the project's target architecture. Key frame: a three-tier model.
+
+- **Tier 1 — Verbs:** atomic per-dot primitives (wander, observe, attack, defend, reproduce, gather, build_upward). These are what the CCE engine already drives.
+- **Tier 2 — Modes:** emergent colony-scale behaviors assembled from weighted primitive combinations (patrol, fortify, swarm, etc.). Not yet implemented — the current engine produces proto-modes organically but doesn't name or track them.
+- **Tier 3 — Motifs:** named persistent structures or states that arise from sustained mode activity (monument, wall line, forward camp). Already partially present in the build/wall system.
+
+Refactor strategy: incremental alongside the current engine, not a rewrite. Tier 1 work continues uninterrupted; Tier 2/3 framing guides design decisions as new mechanics are added.
+
+### New resource subsystem decided: soul
+
+A colony-level scalar resource called **soul** will enter the world as collectible specks on the sphere surface.
+
+- **Source:** specks spawn at random surface positions on the world tick. Spawn rate and spatial distribution TBD.
+- **Collection paths:** wander = incidental (dot happens to pass through a speck cell), gather = directed (gather primitive actively seeks nearest speck).
+- **Consumption:** build consumes soul from the colony pool; combat plunders pool-to-pool on dot kill; exchange (TBD primitive) equalizes pools between aligned colonies.
+- **Monument generation:** monuments passively generating soul is a natural loop (build consumes soul, monuments produce it) — deferred until basic collection and consumption are working.
+
+**Open questions:**
+- Spawn rate constant and target equilibrium soul density on the sphere.
+- Universal vs. selective consumption: does every `build_upward` roll cost soul, or only specific build acts?
+- Monument generation rate and whether it gates on monument height or count.
+
+### Shipped: soul speck spawn + render (commit dd01951)
+
+- `var specks = []` added alongside `dots`/`dot_data` at world-state scope.
+- `_create_speck(dir: Vector3)`: creates `MeshInstance3D` (BoxMesh `0.008 × 0.003 × 0.008`), warm-gold emissive material (`Color(1.0, 0.85, 0.2)`, energy 1.2×), positioned at `dir.normalized() * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)`, added as direct child of Main, appended to `specks`.
+- `_tick_specks()`: 50% chance per tick to call `_create_speck` at a random grid-cell direction via `_cell_to_dir(Vector2i(randi() % GRID_RES, randi() % GRID_RES))`.
+- Hooked into `_process` tick block after `_tick_all_dots()`, before `_update_hud()`.
+- **Does NOT touch:** `dots`, `dot_data`, `spatial_grid`, or any existing tick function. Fully parallel structure.
+- Spawn + render only. No collection, no pool, no removal, no dot interaction.
+
+### Shipped: soul speck collection mechanic (commit 92e40d9)
+
+- `"collect_lock": null` added to `dot_data` initializer in `_create_dot`, alongside `"pending_observe"`.
+- Lock-guard inserted in `_tick_all_dots` after the existing `combat_locked` and `is_wall` guards, before `_tick_dot`. On the resolution tick (`lock["until_tick"] == _tick_num`): if the speck is still in `specks`, call `queue_free()` and erase it; in all cases set `collect_lock` back to `null` and `continue` (skip `_tick_dot`).
+- Collision check appended to `_tick_dot` after `_execute_primitive` returns: compute `my_cell = _cell_key(dot.position.normalized())`, scan `specks` for a matching cell, set `collect_lock = { "until_tick": _tick_num + 1, "speck": speck }` on first match and break.
+- Tick order flipped: `_tick_specks()` moved to run **before** `_tick_all_dots()` so specks spawned this tick are immediately collidable within the same tick.
+
+### Collection mechanic design decisions
+
+- **Simultaneous arrivers:** two dots landing on the same speck cell in the same tick both set a `collect_lock`. The first to resolve frees the speck; subsequent resolutions find it gone and clear silently. Rule: *the lock is the receipt* — whatever quantity the pool stage eventually grants will be granted to both. Intentional; exploits the probabilistic engine rather than fighting it.
+- **Late arrivers:** a dot arriving on a speck cell on tick N+1 (the existing lock's resolution tick) finds the speck already gone after the first resolution fires within that tick's loop. The arriving dot never sets a lock because the collision check runs after `_execute_primitive` and the speck is no longer in `specks` by the time the late arrival's scan runs. Correct by ordering.
+- **Newborn dots:** a dot spawned by `reproduce` into a speck cell has its first `_tick_dot` run naturally; the collision check fires at the end and sets a lock. No special-casing needed or added.
+- **Combat interruption:** a dot whose `collect_lock` resolution is delayed past `until_tick` (because `combat_locked` fired before the lock-guard on the resolution tick) will clear the lock without removing the speck. Modeled as "hard to collect while in combat." The speck remains and can be collected by another dot. Accepted edge case; not worth complicating the guard for.
+- **Lock state shape:** `{ "until_tick": int, "speck": <node ref> }` rather than a boolean. Stores the speck reference so the resolution handler knows exactly which node to free without a second scan. The integer leaves room for CCE-modulated variable lock durations later (e.g. `gather` CCE reducing lock duration).
+
+### Verification
+
+Verified end-to-end with a throwaway HUD counter (`Collections: N`), reverted before commit. Three confirmed resolutions observed in play. Collection rate is low relative to speck spawn rate because colony 0 dots are heavily occupied by build-banner activity and rarely wander into speck cells.
+
+### Next stage: colony-level soul pool
+
+The `collect_lock` resolution currently does nothing beyond removing the speck. Next: increment a per-colony scalar `soul_pool[colony]` on resolution. Display in HUD. No spending logic yet — pool accumulates freely. This is the "resource pool" stage referenced throughout the design.
+
+### Open design questions carried forward
+
+- Spawn rate constant and target equilibrium speck density on the sphere.
+- Universal vs. selective soul consumption: does every `build_upward` roll cost soul, or only specific acts (e.g. founding a monument, not stacking)?
+- Monument soul-generation snowball balance: if monuments generate soul and build consumes it, a large monument advantage compounds. Needs a cap or decay mechanism.
+- Whether `wander` should be the incidental collection path or whether collection should require an explicit `gather` roll to keep primitives semantically clean.
