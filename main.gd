@@ -291,8 +291,8 @@ func _process(delta):
 		_tick_banners()
 		_tick_build_banners()
 		_tick_combat_clusters()
-		_tick_all_dots()
 		_tick_specks()
+		_tick_all_dots()
 		_update_hud()
 
 # --- Chant file ---
@@ -402,6 +402,14 @@ func _tick_all_dots():
 			continue
 		if dot_data[dot].get("is_wall", false):
 			continue
+		var lock = dot_data[dot].get("collect_lock", null)
+		if lock != null:
+			if lock["until_tick"] == _tick_num:
+				if lock["speck"] in specks:
+					lock["speck"].queue_free()
+					specks.erase(lock["speck"])
+				dot_data[dot]["collect_lock"] = null
+			continue
 		_tick_dot(dot)
 
 func _tick_dot(dot: Node3D):
@@ -432,6 +440,11 @@ func _tick_dot(dot: Node3D):
 		var cell = _cell_key(dot.position.normalized())
 		_log("[t%d] dot %d at (%d,%d) roll: %s" % [_tick_num, dot_data[dot]["dot_id"], cell.x, cell.y, chosen])
 	_execute_primitive(dot, chosen, cce["dials"])
+	var my_cell = _cell_key(dot.position.normalized())
+	for speck in specks:
+		if _cell_key(speck.position.normalized()) == my_cell:
+			dot_data[dot]["collect_lock"] = { "until_tick": _tick_num + 1, "speck": speck }
+			break
 
 func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 	var range_val = dials.get("range", 0.5)
@@ -1134,7 +1147,7 @@ func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_
 			if parent_cce["dials"].has(key):
 				cce["dials"][key] = parent_cce["dials"][key] * dilution
 
-	dot_data[dot] = { "age": 0, "cce": cce, "colony": colony, "build_banners_used": {}, "dot_id": _next_dot_id, "pending_observe": null }
+	dot_data[dot] = { "age": 0, "cce": cce, "colony": colony, "build_banners_used": {}, "dot_id": _next_dot_id, "pending_observe": null, "collect_lock": null }
 	_next_dot_id += 1
 	known_colonies[colony] = true
 	colony_counts[colony] = colony_counts.get(colony, 0) + 1
