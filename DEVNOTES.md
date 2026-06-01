@@ -1021,3 +1021,23 @@ Adoption is incremental. Likely flow for the next session:
 
 **New open question for the primitive work:**
 Dots are heavily occupied by build-banner activity, so collection rate is low. This was acceptable when the pool had no effect, but may need revisiting once primitives actually consume soul — a colony that can never collect enough soul to act is a dead design.
+
+
+---
+
+## Session Notes — 2026-06-01 (primitive revisit, session 1)
+
+Began revisiting the Tier 1 verb set against the North Star, now that the soul/speck system is working substrate.
+
+### Decisions
+
+- **Collection stays ambient for now** — soul collection remains a primitive-agnostic tick-level effect (any dot ending its tick on a speck cell collects). Confirmed working; gather refactor deferred, collection to be tuned when gather is wired as a real CCE verb.
+- **Renamed primitive `wander` → `move`** (North Star Tier 1 name). Pure key rename, behavior identical (undirected drift, range/spiral dials, foreign-block). 8 literal sites in `main.gd`: NEUTRAL/COLONY0/COLONY1 motion keys, `CCE_COLORS`, three `CHANT_RECIPES` inner payloads, `_execute_primitive` match case. Generic consumers (selection pool, `_update_dot_color`, `_update_hud`, log) follow the key automatically.
+- **Outer chant trigger words `"wander"`/`"explore"`/`"roam"` left intact** as player aliases — typing "wander" still raises `move`. No "move" trigger added (separate UX call, deferred).
+- **Verification:** `validate_script` clean; grep confirmed 1 "wander" literal remaining (line-124 trigger) and "move" at all 8 sites; visual confirmed in editor (drift + gold color intact).
+
+### Open threads
+
+- **observe** — only live primitive producing nothing: writes `pending_observe` (tick+1) that nothing reads; overlaps attack's own radius-10 self-scan. Next decision: observe as the detection layer attack consumes vs. cut as redundant.
+- **Scattered locomotion** — movement is `move` plus ad-hoc marches inside attack/defend/build_upward. Open whether those consolidate under `move` later. Not touched this session.
+- **gather refactor + collection tuning; chant trigger-word naming** — both deferred.

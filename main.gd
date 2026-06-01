@@ -86,7 +86,7 @@ const OBSERVE_SCALE := 20
 
 const NEUTRAL_CCE = {
 	"motion": {
-		"wander": 0.0,
+		"move": 0.0,
 		# "face_target": reserved \u2014 not yet wired
 	},
 	"action": {
@@ -109,7 +109,7 @@ const NEUTRAL_CCE = {
 }
 
 const CCE_COLORS = {
-	"wander": Color(1.0, 0.75, 0.1),
+	"move": Color(1.0, 0.75, 0.1),
 	"reproduce": Color(0.3, 0.9, 0.3),
 	"defend": Color(0.2, 0.5, 1.0),
 	"attack": Color(1.0, 0.2, 0.2),
@@ -121,9 +121,9 @@ const CCE_NEUTRAL_COLOR = Color(1.0, 1.0, 1.0)
 # Active chant aliases. Dead primitives (gather/build/mark) intentionally absent
 # until their execution paths exist.
 const CHANT_RECIPES = {
-	"wander":    { "motion": { "wander": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
-	"explore":   { "motion": { "wander": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
-	"roam":      { "motion": { "wander": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	"wander":    { "motion": { "move": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	"explore":   { "motion": { "move": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	"roam":      { "motion": { "move": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
 	"spiral":    { "dials": { "spiral": 0.1 } },
 	"reproduce": { "action": { "reproduce": CHANT_WEIGHT } },
 	"multiply":  { "action": { "reproduce": CHANT_WEIGHT } },
@@ -172,7 +172,7 @@ const FOG_EMISSION = Color(0.1, 0.1, 0.1)
 
 const COLONY1_CCE = {
 	"motion": {
-		"wander": 0.40,
+		"move": 0.40,
 	},
 	"action": {
 		"mark_surface": 0.0,
@@ -192,7 +192,7 @@ const COLONY1_CCE = {
 
 const COLONY0_CCE = {
 	"motion": {
-		"wander": 0.40,
+		"move": 0.40,
 	},
 	"action": {
 		"mark_surface": 0.0,
@@ -456,7 +456,7 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 	var spiral = dials.get("spiral", 0.0)
 
 	match primitive:
-		"wander":
+		"move":
 			var nudge_amount = lerp(0.01, 0.08, range_val)
 			var dir = dot.position.normalized()
 			var tangent: Vector3
