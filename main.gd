@@ -575,13 +575,52 @@ func _execute_build(dot: Node3D):
 func _execute_observe(dot: Node3D) -> void:
 	var observe_weight = dot_data[dot]["cce"]["action"].get("observe", 0.0)
 	var radius = int(OBSERVE_BASE_RADIUS + OBSERVE_SCALE * observe_weight)
-	var pending = dot_data[dot]["pending_observe"]
-	if pending != null and pending["expires_on_tick"] <= _tick_num:
-		dot_data[dot]["pending_observe"] = null
+	var radius_sq = radius * radius
 	var my_dir = dot.position.normalized()
+	var my_cell = _cell_key(my_dir)
 	var my_colony = dot_data[dot]["colony"]
-	var result = _find_nearest_foreign_in_radius(my_dir, my_colony, radius)
-	dot_data[dot]["pending_observe"] = { "enemy": result, "expires_on_tick": _tick_num + 1 }
+
+	# Enemy: nearest foreign dot
+	var enemy_entry = null
+	var enemy = _find_nearest_foreign_in_radius(my_dir, my_colony, radius)
+	if enemy != null:
+		enemy_entry = { "pos": enemy.position.normalized(), "dot": enemy }
+
+	# Speck: nearest speck within radius (linear scan — specks aren't grid-indexed)
+	var speck_entry = null
+	var best_speck_dist = radius_sq + 1
+	for speck in specks:
+		var d = _torus_cell_dist_sq(my_cell, _cell_key(speck.position.normalized()))
+		if d <= radius_sq and d < best_speck_dist:
+			best_speck_dist = d
+			speck_entry = { "pos": speck.position.normalized(), "node": speck }
+
+	# Ally: nearest same-colony dot (excluding self and walls)
+	var ally_entry = null
+	var ally = _find_nearest_ally_in_radius(my_dir, my_colony, radius, dot)
+	if ally != null:
+		ally_entry = { "pos": ally.position.normalized(), "dot": ally }
+
+	# Banner: nearest active same-colony build banner within radius
+	# (no build_banners_used filter — observe is sensing, not committing)
+	var banner_entry = null
+	var best_banner_dist = radius_sq + 1
+	for banner in build_banners:
+		if banner["colony"] != my_colony:
+			continue
+		if banner["ticks_remaining"] <= 0:
+			continue
+		var d = _torus_cell_dist_sq(my_cell, banner["cell"])
+		if d <= radius_sq and d < best_banner_dist:
+			best_banner_dist = d
+			banner_entry = { "pos": _cell_to_dir(banner["cell"]), "cell": banner["cell"] }
+
+	dot_data[dot]["pending_observe"] = {
+		"enemy": enemy_entry,
+		"speck": speck_entry,
+		"ally": ally_entry,
+		"banner": banner_entry,
+	}
 
 func _is_at_or_adjacent(a: Vector2i, b: Vector2i) -> bool:
 	# Wider than literal adjacency \u2014 lets builders within a ~5x5 area of the banner
@@ -1027,6 +1066,30 @@ func _find_nearest_foreign_in_radius(dir: Vector3, my_colony: int, radius: int):
 						if d < best_dist:
 							best_dist = d
 							best = occupant
+	return best
+
+func _find_nearest_ally_in_radius(dir: Vector3, my_colony: int, radius: int, exclude: Node3D):
+	var key = _cell_key(dir)
+	var best = null
+	var best_dist = INF
+	for du in range(-radius, radius + 1):
+		for dv in range(-radius, radius + 1):
+			var neighbor = Vector2i((key.x + du) % GRID_RES, (key.y + dv) % GRID_RES)
+			if spatial_grid.has(neighbor):
+				for occupant in spatial_grid[neighbor]:
+					if occupant == exclude:
+						continue
+					if not dot_data.has(occupant):
+						continue
+					if dot_data[occupant].get("is_wall", false):
+						continue
+					if dot_data[occupant]["colony"] != my_colony:
+						continue
+					var occ_key = dot_cell.get(occupant, _cell_key(occupant.position.normalized()))
+					var d = float((key - occ_key).length_squared())
+					if d < best_dist:
+						best_dist = d
+						best = occupant
 	return best
 
 func _get_foreign_dots_near(dir: Vector3, my_colony: int) -> Array:

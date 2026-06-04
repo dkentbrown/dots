@@ -1041,3 +1041,28 @@ Began revisiting the Tier 1 verb set against the North Star, now that the soul/s
 - **observe** — only live primitive producing nothing: writes `pending_observe` (tick+1) that nothing reads; overlaps attack's own radius-10 self-scan. Next decision: observe as the detection layer attack consumes vs. cut as redundant.
 - **Scattered locomotion** — movement is `move` plus ad-hoc marches inside attack/defend/build_upward. Open whether those consolidate under `move` later. Not touched this session.
 - **gather refactor + collection tuning; chant trigger-word naming** — both deferred.
+
+
+### Observe refactor — Stage 1 (scan everything, persist until consumed)
+
+Design session established a 3-level verb taxonomy:
+- **Atomic operations** (building blocks): move, observe
+- **Naked verbs** (fire standalone): build, reproduce, ritualize, exchange, teach, incorporate
+- **Composite recipes** (emerge from observe+move sequences): gather, defend, attack
+
+Key design decisions:
+- **observe promoted to foundational atomic op** — the shared sensing primitive composite recipes consume.
+- **Scans for everything**: enemies, specks, allies, build banners within radius. Dumb sensor, no filtering by intention.
+- **Persist until consumed**: no expiry. Observations overwrite on re-roll (one per dot). Consumed by move in Stage 2.
+- **Move consumes observations** (Stage 2, not yet built): when a dot rolls move with a pending observation matching a CCE weight (e.g., gather > 0 + speck), move becomes directed. Multiple matches: highest CCE weight wins. Threshold: > 0.0.
+- **spiral parked as motif-layer material**; move defined as pure null-random drift + magnitude rides move weight.
+
+**Implemented (Stage 1, this commit):** Rewrote `_execute_observe` to scan four entity types. New `pending_observe` = `{enemy, speck, ally, banner}`, each entry `{pos, dot/node}` or null. Dropped `expires_on_tick`. New helper `_find_nearest_ally_in_radius`. No consumer wired yet.
+
+**Flagged:** distance-metric inconsistency — enemy/ally use non-wrapping box distance, speck/banner use torus-wrapped circular. Matches existing function patterns; harmonize later if needed.
+
+**Design docs produced this session** (chat outputs, not in repo): `primitive_system_design_sketch.md` (full taxonomy + open questions), `pr_evaluation_worked_example.md` (NS formula walkthrough with numbers).
+
+### Next: Stage 2 — move consumes observations
+
+Wire the move case in `_execute_primitive` to check `pending_observe`, match against CCE weights, compute directed step toward target, validate target still exists, consume the observation. First composite recipe (gather = observe + directed move + ambient collection) works at runtime.
