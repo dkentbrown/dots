@@ -1066,3 +1066,31 @@ Key design decisions:
 ### Next: Stage 2 — move consumes observations
 
 Wire the move case in `_execute_primitive` to check `pending_observe`, match against CCE weights, compute directed step toward target, validate target still exists, consume the observation. First composite recipe (gather = observe + directed move + ambient collection) works at runtime.
+
+## Session 2026-06-08 — North Star P(r) softmax selection
+
+- Replaced the linear roulette chooser in _tick_dot with NS softmax:
+  P(k) = exp(score)/Σ exp(score) over the unchanged >0.0 weight pool.
+  score = A + M + T + S_am + S_at + S_mt + C + E + H; only A is live
+  (binds current CCE weight; chant still folded into A via _apply_recipe).
+  The other eight terms are zeroed slots, each a one-line activation.
+  Raw exp, no temperature/scale — flatter distribution accepted.
+- Selection set, observe/move handling, ambient collection, attack
+  self-scan, and dials all unchanged. Other NS systems (decay,
+  inheritance, contagion, intensity) out of scope.
+- Verified via temporary per-colony/verb counter + JSON dump (since
+  stripped). Tick-200 run, colony 0, 1000 dots, 108,847 selections:
+  build_upward 26.8%, move 26.8%, reproduce 26.7%, observe 19.7% —
+  matches predicted softmax (~26.7% each for the three 0.40 verbs,
+  ~19.8% observe). Only the four live verbs appeared (filter confirmed).
+  Wall-gating did not suppress build's selection share.
+- Single-colony finding: scene instantiates colony 0 only (~1000-dot
+  population cap); COLONY1_CCE exists as a constant but is never spawned.
+  Orthogonal to this refactor; two-colony spawn deferred as separate work.
+- CORRECTION: Stage 2 (move consumes pending_observe) was never
+  implemented — prior handoff/DEVNOTES were ahead of the tree.
+  pending_observe is still write-only (set in _execute_observe, no
+  consumer). Stage 2 remains pending.
+- "Build focused" rebalance: moot. Build is selected at the same ~27%
+  as move/reproduce; any build-heavy look is structure accumulation,
+  not selection.

@@ -427,14 +427,31 @@ func _tick_dot(dot: Node3D):
 			pool[key] = cce["action"][key]
 	if pool.is_empty():
 		return
+	# North Star selection: P(r) = softmax(A + M + T + S_am + S_at + S_mt + C + E + H).
+	# Only A is live (binds to the current CCE weight, chant already folded in via
+	# _apply_recipe). The other eight terms are present-but-zero so each can be filled
+	# in later as a one-line change.
+	var weights = {}  # key -> exp(score)
 	var total = 0.0
 	for key in pool:
-		total += pool[key]
+		var A = pool[key]   # action tendency (current CCE weight)
+		var M = 0.0         # motif
+		var T = 0.0         # target
+		var S_am = 0.0      # synergy: action × motif
+		var S_at = 0.0      # synergy: action × target
+		var S_mt = 0.0      # synergy: motif × target
+		var C = 0.0         # chant pressure (currently folded into A)
+		var E = 0.0         # environment
+		var H = 0.0         # history
+		var score = A + M + T + S_am + S_at + S_mt + C + E + H
+		var w = exp(score)
+		weights[key] = w
+		total += w
 	var roll = randf() * total
 	var chosen = ""
 	var cumulative = 0.0
 	for key in pool:
-		cumulative += pool[key]
+		cumulative += weights[key]
 		if roll <= cumulative:
 			chosen = key
 			break
