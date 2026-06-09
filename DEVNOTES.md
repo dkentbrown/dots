@@ -1133,3 +1133,18 @@ Wire the move case in `_execute_primitive` to check `pending_observe`, match aga
 	- enemy/ally/banner observation consumers remain unwired; `enemy -> attack` is gated behind the larger combat-walls design.
 	- Distance-metric inconsistency (enemy/ally box distance vs speck/banner torus) still flagged, cosmetic, untouched.
 	
+	
+	---
+	
+	## Session Notes — 2026-06-09 (cont., rename build_upward -> build)
+	
+	Pure key rename of the action-CCE verb `build_upward` -> `build`. The `_upward` suffix baked in a direction that's merely the only current build option; the verb is `build` (cf. naming `move` rather than `move_tangentially`). Same shape as the 2026-06-01 `wander -> move` rename. Behavior identical — generic consumers (selection pool, `_update_dot_color`, `_update_hud`, logs) follow the key automatically.
+	
+	- 7 literal sites in `main.gd`: comment (line 57), `NEUTRAL_CCE`, `CCE_COLORS`, `COLONY1_CCE`, `COLONY0_CCE`, `_execute_primitive` match case, `_compute_colony_avg_build_cce` (`.get(...)` key).
+	- Untouched: all `BUILD_*` constants, `_execute_build`, `build_banners`, `OBSERVE_MOVE_MAP`, selection logic, chant recipes (no build alias exists).
+	- Verified: zero-residual grep in `main.gd`; project-wide `.gd` scan confirms no stray `build_upward` anywhere; `validate_script` clean.
+	
+	Note: the build verb is named generically now, but build still only places blocks upward (single direction is the sole option today). The rename is forward-looking — directionality becomes a property of the build act later, not the verb's identity.
+	
+	(Mid-session environment hiccup: Claude Code's terminal lost OS-level filesystem access (macOS TCC) before the first attempt; the Godot editor process retained access. Resolved by restarting the Code session. No code impact.)
+	

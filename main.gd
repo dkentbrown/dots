@@ -54,7 +54,7 @@ var soul_pool = {}   # colony_id -> accumulated soul units
 # Build banners (anchored at a placed block, attracting nearby builders)
 const BUILD_BANNER_RADIUS = 15
 const BUILD_BANNER_TTL = 6
-const BUILD_START_CHANCE = 0.05  # chance a build_upward roll starts a new monument when no banner is in range
+const BUILD_START_CHANCE = 0.05  # chance a build roll starts a new monument when no banner is in range
 const BUILD_AT_BANNER_STACK_PREF = 0.8  # base prob. of stacking when building at a banner (at height 0)
 const STACK_HEIGHT_SOFTCAP = 10  # stack pref scales linearly to ~0 at this height
 # Monument size cap. cap = BUILD_MONUMENT_BASE + BUILD_MONUMENT_SCALE * colony_avg_build_cce.
@@ -96,7 +96,7 @@ const NEUTRAL_CCE = {
 	"action": {
 		# Reserved primitives \u2014 not yet wired, kept for forward compatibility
 		"mark_surface": 0.0,
-		"build_upward": 0.0,
+		"build": 0.0,
 		"gather": 0.0,
 		# Active primitives
 		"defend": 0.0,
@@ -117,7 +117,7 @@ const CCE_COLORS = {
 	"reproduce": Color(0.3, 0.9, 0.3),
 	"defend": Color(0.2, 0.5, 1.0),
 	"attack": Color(1.0, 0.2, 0.2),
-	"build_upward": Color(0.6, 0.6, 0.7),
+	"build": Color(0.6, 0.6, 0.7),
 	"observe": Color(0.7, 0.3, 0.9),
 }
 const CCE_NEUTRAL_COLOR = Color(1.0, 1.0, 1.0)
@@ -180,7 +180,7 @@ const COLONY1_CCE = {
 	},
 	"action": {
 		"mark_surface": 0.0,
-		"build_upward": 0.0,
+		"build": 0.0,
 		"gather": 0.0,
 		"defend": 0.0,
 		"attack": 0.40,
@@ -200,7 +200,7 @@ const COLONY0_CCE = {
 	},
 	"action": {
 		"mark_surface": 0.0,
-		"build_upward": 0.40,
+		"build": 0.40,
 		"gather": 0.0,
 		"defend": 0.0,
 		"attack": 0.0,
@@ -517,7 +517,7 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 			var toward = (_cached_colony_center - dir).normalized()
 			var new_dir = (dir + toward * DEFEND_STEP).normalized()
 			_place_dot_on_sphere(dot, new_dir, true)
-		"build_upward":
+		"build":
 			_execute_build(dot)
 		"observe":
 			_execute_observe(dot)
@@ -788,7 +788,7 @@ func _compute_colony_avg_build_cce(colony: int) -> float:
 			continue
 		if dot_data[dot].get("is_wall", false):
 			continue
-		total += dot_data[dot]["cce"]["action"].get("build_upward", 0.0)
+		total += dot_data[dot]["cce"]["action"].get("build", 0.0)
 		count += 1
 	if count == 0:
 		return 0.0
