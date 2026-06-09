@@ -1094,3 +1094,42 @@ Wire the move case in `_execute_primitive` to check `pending_observe`, match aga
 - "Build focused" rebalance: moot. Build is selected at the same ~27%
   as move/reproduce; any build-heavy look is structure accumulation,
   not selection.
+
+	
+	---
+	
+	## Session Notes — 2026-06-09 (Stage 2 — move consumes pending_observe)
+	
+	### Shipped: move consumes pending_observe (speck -> gather)
+	
+	The first composite recipe is wired. `pending_observe` is no longer write-only — the `move` primitive now consumes it.
+	
+	- New const `OBSERVE_MOVE_MAP = { "speck": "gather" }` — maps a `pending_observe` key to the `cce.action` verb that claims it. One pair today; extending is a one-line edit.
+	- Consumer block at the top of the `move` case in `_execute_primitive`, before the drift:
+	  - Null-guard the `pending_observe` field (it's `null` until first observe and after consumption).
+	  - Loop the map: a candidate exists when the observation entry is non-null AND the mapped verb's CCE weight > 0.0. Highest weight wins; strictly-greater comparison keeps the first map entry on ties (deterministic).
+	  - On a match: `_march_toward_dir` one cell toward the observed `pos`, set `pending_observe = null` (consume), skip drift this tick.
+	  - No match: existing undirected drift unchanged, observation persists (overwritten on next observe). "Persist until consumed."
+	
+	### Design decisions (planner)
+	
+	- **Only `speck -> gather` wired.** Deliberately NOT wiring the other three observation entries: `enemy -> attack` belongs to the still-open combat-walls redesign (2026-05-13; defend-under-observe, A2 adjacency combat, wall banners all unresolved); `banner -> build_upward` would collide with the existing `_execute_build` banner march; `ally -> ?` has no defined verb semantics. Each is later a one-line map entry.
+	- **pos-only marching.** Consumer reads `pending_observe[key]["pos"]` (a normalized dir) only, never the node/dot/cell ref. Kills the stale-ref class and the per-type key-name inconsistency (`dot`/`node`/`cell`) in one move. A stale target = marching at a now-empty cell, harmless.
+	- **`_march_toward_dir` reused unchanged.** Accepts its loose single-cell foreign block (`_is_foreign_in_exact_cell`, vs undirected move's 3x3) and its fixed `CELL_STEP` magnitude (ignores range/spiral dials). Tightening either is deferred tuning that would apply equally to a future combat march. The 2026-06-01 "magnitude rides move weight" line remains an aspiration, unimplemented.
+	
+	### Verification
+	
+	- `validate_script` clean after wiring and again after stripping scaffolding.
+	- gather is unraisable in normal play (default weight 0, no gather chant trigger in `CHANT_RECIPES`), so the branch was exercised via temporary scaffolding: gather seeded to 0.3 on `COLONY0_CCE`, specks temp-spawned near the colony, temp print in the directed branch. Directed-march fired 52+ times across many distinct dots (ids 1-51), including diluted children that inherited gather — confirms the inheritance path carries the new weight. No-match dots kept drifting; no runtime errors.
+	- All scaffolding stripped before review: gather reverted to 0.0, temp print removed, `_tick_specks` restored. Working tree left `M main.gd` only (keeper = const + consumer block). No `build_log.txt`.
+	
+	### Ambient-collection leg already existed
+	
+	The "collection" half of the gather composite was already wired (`collect_lock` set when a dot ends its tick on a speck cell; collection resolves and credits `soul_pool`). Stage 2 supplied only the directed-move leg. The composite (observe -> directed move toward speck -> ambient collect) is now mechanically complete end-to-end.
+	
+	### Next / still open
+	
+	- **gather chant trigger** is the obvious unblock — without a `gather`/`collect`/`harvest` alias in `CHANT_RECIPES`, gather can't be raised > 0 in play, so the composite is correct but unreachable by the player. Deferred as separate UX/vocabulary work (chant trigger-word naming has been parked repeatedly).
+	- enemy/ally/banner observation consumers remain unwired; `enemy -> attack` is gated behind the larger combat-walls design.
+	- Distance-metric inconsistency (enemy/ally box distance vs speck/banner torus) still flagged, cosmetic, untouched.
+	

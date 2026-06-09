@@ -84,6 +84,10 @@ const MAX_CCE_FOR_SATURATION = 1.5
 const OBSERVE_BASE_RADIUS := 3
 const OBSERVE_SCALE := 20
 
+# pending_observe key -> cce.action verb that consumes it via directed move.
+# One pair today (speck -> gather, the first composite recipe); add a line to extend.
+const OBSERVE_MOVE_MAP = { "speck": "gather" }
+
 const NEUTRAL_CCE = {
 	"motion": {
 		"move": 0.0,
@@ -474,6 +478,23 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 
 	match primitive:
 		"move":
+			# Consume a pending observation: if one matches a CCE verb (highest weight wins),
+			# move becomes a directed step toward the observed position and is consumed.
+			var pending = dot_data[dot]["pending_observe"]
+			if pending != null:
+				var best_key = ""
+				var best_weight = 0.0
+				for obs_key in OBSERVE_MOVE_MAP:
+					if pending[obs_key] == null:
+						continue
+					var verb_weight = dot_data[dot]["cce"]["action"][OBSERVE_MOVE_MAP[obs_key]]
+					if verb_weight > 0.0 and verb_weight > best_weight:
+						best_weight = verb_weight
+						best_key = obs_key
+				if best_key != "":
+					_march_toward_dir(dot, dot.position.normalized(), pending[best_key]["pos"], dot_data[dot]["colony"])
+					dot_data[dot]["pending_observe"] = null
+					return
 			var nudge_amount = lerp(0.01, 0.08, range_val)
 			var dir = dot.position.normalized()
 			var tangent: Vector3
