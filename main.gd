@@ -22,6 +22,7 @@ const CHANT_FILE = "res://chant.json"
 
 # Combat
 const COMBAT_TICKS = 3
+const COMBAT_INTENSITY_THRESHOLD = 0.7  # above this intensity, combat resolves one tick faster
 var combat_clusters = []  # [{"pairs": [{"attacker": dot, "defender": dot}], "ticks_remaining": int}]
 var combat_locked = {}    # dot -> true, skips primitive roll while in combat
 var cluster_by_defender = {}  # defender dot -> cluster reference (O(1) lookup)
@@ -60,6 +61,7 @@ const BUILD_BANNER_TTL = 6
 const BUILD_START_CHANCE = 0.05  # chance a build roll starts a new monument when no banner is in range
 const BUILD_AT_BANNER_STACK_PREF = 0.8  # base prob. of stacking when building at a banner (at height 0)
 const STACK_HEIGHT_SOFTCAP = 10  # stack pref scales linearly to ~0 at this height
+const BUILD_FOOTPRINT_DIST_SQ = 8  # squared torus-cell dist within which a builder counts as at/adjacent to a banner
 # Monument size cap. cap = BUILD_MONUMENT_BASE + BUILD_MONUMENT_SCALE * colony_avg_build_cce.
 # Snapshotted at founder placement and stored on the banner. Independent of population \u2014
 # big colonies just hit the cap faster, small ones may never reach it (banner times out).
@@ -83,6 +85,11 @@ const DEFEND_STEP = 0.01
 const DOT_SURFACE_OFFSET = 0.0075
 const PARALLEL_EPSILON = 0.0001
 const MAX_CCE_FOR_SATURATION = 1.5
+const SPECK_SPAWN_CHANCE = 0.5         # per-tick probability a speck spawns
+const REPRODUCE_CHANCE_MIN = 0.1       # reproduce probability at intensity 0
+const REPRODUCE_CHANCE_MAX = 0.9       # reproduce probability at intensity 1
+const MOVE_NUDGE_MIN = 0.01            # undirected-drift nudge at range_val 0
+const MOVE_NUDGE_MAX = 0.08            # undirected-drift nudge at range_val 1
 
 const OBSERVE_BASE_RADIUS := 3
 const OBSERVE_SCALE := 20
@@ -520,7 +527,7 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 					_march_toward_dir(dot, dot.position.normalized(), pending[best_key]["pos"], dot_data[dot]["colony"])
 					dot_data[dot]["pending_observe"] = null
 					return
-			var nudge_amount = lerp(0.01, 0.08, range_val)
+			var nudge_amount = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val)
 			var dir = dot.position.normalized()
 			var tangent: Vector3
 			if spiral > 0.1:
@@ -532,7 +539,7 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 			var new_dir = (dir + tangent * nudge_amount).normalized()
 			_place_dot_on_sphere(dot, new_dir, true)
 		"reproduce":
-			var chance = lerp(0.1, 0.9, intensity)
+			var chance = lerp(REPRODUCE_CHANCE_MIN, REPRODUCE_CHANCE_MAX, intensity)
 			if randf() < chance:
 				_spawn_dot_near(dot, dot_data[dot]["colony"])
 		"attack":
@@ -569,7 +576,7 @@ func _execute_attack(dot: Node3D, intensity: float):
 func _initiate_combat(attacker: Node3D, defender: Node3D, intensity: float):
 	combat_locked[attacker] = true
 	combat_locked[defender] = true
-	var ticks = COMBAT_TICKS - (1 if intensity > 0.7 else 0)
+	var ticks = COMBAT_TICKS - (1 if intensity > COMBAT_INTENSITY_THRESHOLD else 0)
 	# O(1) lookup: does this defender already have a cluster?
 	if cluster_by_defender.has(defender):
 		var cluster = cluster_by_defender[defender]
@@ -694,7 +701,7 @@ func _is_at_or_adjacent(a: Vector2i, b: Vector2i) -> bool:
 	# Wider than literal adjacency \u2014 lets builders within a ~5x5 area of the banner
 	# participate, so the lateral footprint reflects the cloud's natural shape
 	# instead of being clamped to the 8-neighbor ring.
-	return _torus_cell_dist_sq(a, b) <= 8
+	return _torus_cell_dist_sq(a, b) <= BUILD_FOOTPRINT_DIST_SQ
 
 func _find_eligible_build_banner(dot: Node3D, my_cell: Vector2i, my_colony: int):
 	if build_banners.is_empty():
@@ -1347,7 +1354,7 @@ func _create_speck(dir: Vector3) -> void:
 	specks.append(speck)
 
 func _tick_specks() -> void:
-	if randf() < 0.5:
+	if randf() < SPECK_SPAWN_CHANCE:
 		_create_speck(_cell_to_dir(Vector2i(randi() % GRID_RES, randi() % GRID_RES)))
 
 # --- Camera ---

@@ -1204,3 +1204,22 @@ Wire the move case in `_execute_primitive` to check `pending_observe`, match aga
 	
 	Remaining do-now cleanup: M1–M5 magic-number constant promotions (esp. `SPECK_SPAWN_CHANCE`).
 	
+	
+	---
+	
+	## Session Notes — 2026-06-09 (cont., M1–M5 constant promotions)
+	
+	Promoted five tuning literals to named constants (Tier A, behavior-identical). `validate_script` clean.
+	
+	- `SPECK_SPAWN_CHANCE = 0.5` — speck spawn roll in `_tick_specks`.
+	- `REPRODUCE_CHANCE_MIN = 0.1` / `REPRODUCE_CHANCE_MAX = 0.9` — reproduce `lerp`.
+	- `MOVE_NUDGE_MIN = 0.01` / `MOVE_NUDGE_MAX = 0.08` — undirected-drift `lerp` in the `move` case.
+	- `COMBAT_INTENSITY_THRESHOLD = 0.7` — combat-shortening comparison in `_execute_attack`.
+	- `BUILD_FOOTPRINT_DIST_SQ = 8` — squared torus-distance threshold in `_is_at_or_adjacent` (build-banner adjacency).
+	
+	Surgical, per-occurrence replacement: each value recurs (the separate `randf() < 0.5` colony coin-flip, `DEFEND_STEP = 0.01`, `CCE_DILUTION = 0.7`, dials/colors), and all non-target occurrences were left untouched — verified by re-grep. Placement: M1–M3 in the tuning block, M4/M5 beside their domain constants.
+	
+	### Do-now-safe cleanup queue (from the refactor catalog) is now complete
+	
+	Shipped this session: landmine comment pass (`cffc384`), N1 rally-banner rename (`d2e4bce`), and these constant promotions (pending commit). Remaining catalog items all deliberately deferred: Tier B dedups/extractions (U1/U4/U5/U6/U7/U8/T1 — no behavioral-equivalence harness), N4 wall->block mass rename (project-parked), N5 + low-value constants/notes. F1 (collect_lock stall) and F2 (negative-modulo seam) remain parked as functional findings for combat-walls pre-work.
+	
