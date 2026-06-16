@@ -38,7 +38,7 @@ const ATTACK_DETECT_RADIUS = 10  # in grid cells
 # Rally banners (dropped on combat contact, friendly-only pull)
 const RALLY_RADIUS = 30  # cells; how far a banner pulls reinforcements
 const BANNER_TTL = 6     # ticks a banner persists after contact
-var banners = []  # [{cell: Vector2i, colony: int, ticks_remaining: int}]
+var rally_banners = []  # [{cell: Vector2i, colony: int, ticks_remaining: int}]
 
 # Per-colony population cap (testing aid)
 const MAX_POPULATION_PER_COLONY = 1000
@@ -311,7 +311,7 @@ func _process(delta):
 		# Spatial grid is now incrementally maintained \u2014 no rebuild needed
 		_cached_colony_center = _compute_colony_center(LOCAL_COLONY)
 		_check_fog_of_war()
-		_tick_banners()
+		_tick_rally_banners()
 		_tick_build_banners()
 		_tick_combat_clusters()
 		_tick_specks()
@@ -556,7 +556,7 @@ func _execute_attack(dot: Node3D, intensity: float):
 	var target = _find_nearest_foreign_in_radius(my_dir, my_colony, ATTACK_DETECT_RADIUS)
 	if target == null:
 		# No enemy in detect range \u2014 check for a friendly rally banner to march toward
-		_march_toward_banner(dot, my_dir, my_colony)
+		_march_toward_rally_banner(dot, my_dir, my_colony)
 		return
 	if combat_locked.has(dot) or combat_locked.has(target):
 		return
@@ -580,8 +580,8 @@ func _initiate_combat(attacker: Node3D, defender: Node3D, intensity: float):
 		cluster_by_defender[defender] = cluster
 	# Drop rally banners for both sides at the contact cell
 	var contact_cell = _cell_key(defender.position.normalized())
-	_drop_banner(contact_cell, dot_data[attacker]["colony"])
-	_drop_banner(contact_cell, dot_data[defender]["colony"])
+	_drop_rally_banner(contact_cell, dot_data[attacker]["colony"])
+	_drop_rally_banner(contact_cell, dot_data[defender]["colony"])
 
 func _march_toward(dot: Node3D, my_dir: Vector3, target: Node3D, my_colony: int):
 	var target_dir = target.position.normalized()
@@ -849,20 +849,20 @@ func _tick_build_banners():
 
 # --- Rally banners ---
 
-func _drop_banner(cell: Vector2i, colony: int):
+func _drop_rally_banner(cell: Vector2i, colony: int):
 	# Refresh TTL if a banner already exists at this cell for this colony
-	for banner in banners:
+	for banner in rally_banners:
 		if banner["colony"] == colony and banner["cell"] == cell:
 			banner["ticks_remaining"] = BANNER_TTL
 			return
-	banners.append({"cell": cell, "colony": colony, "ticks_remaining": BANNER_TTL})
+	rally_banners.append({"cell": cell, "colony": colony, "ticks_remaining": BANNER_TTL})
 
-func _tick_banners():
-	var i = banners.size() - 1
+func _tick_rally_banners():
+	var i = rally_banners.size() - 1
 	while i >= 0:
-		banners[i]["ticks_remaining"] -= 1
-		if banners[i]["ticks_remaining"] <= 0:
-			banners.remove_at(i)
+		rally_banners[i]["ticks_remaining"] -= 1
+		if rally_banners[i]["ticks_remaining"] <= 0:
+			rally_banners.remove_at(i)
 		i -= 1
 
 func _cell_to_dir(cell: Vector2i) -> Vector3:
@@ -883,13 +883,13 @@ func _torus_cell_dist_sq(a: Vector2i, b: Vector2i) -> int:
 		dy = GRID_RES - dy
 	return dx * dx + dy * dy
 
-func _march_toward_banner(dot: Node3D, my_dir: Vector3, my_colony: int):
-	if banners.is_empty():
+func _march_toward_rally_banner(dot: Node3D, my_dir: Vector3, my_colony: int):
+	if rally_banners.is_empty():
 		return
 	var my_cell = _cell_key(my_dir)
 	var best = null
 	var best_dist = RALLY_RADIUS * RALLY_RADIUS + 1
-	for banner in banners:
+	for banner in rally_banners:
 		if banner["colony"] != my_colony:
 			continue
 		var d = _torus_cell_dist_sq(my_cell, banner["cell"])

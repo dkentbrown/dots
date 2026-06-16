@@ -1188,3 +1188,19 @@ Wire the move case in `_execute_primitive` to check `pending_observe`, match aga
 	
 	Deferred: all Tier B dedups/extractions (U1/U4/U5/U6/U7/U8/T1), N4 wall->block mass rename (project-parked), low-value constants/notes. Dropped: L11 (colony-center-includes-walls is a gameplay-design question, not cleanup).
 	
+	
+	---
+	
+	## Session Notes — 2026-06-09 (cont., N1 rally-banner rename)
+	
+	Renamed the rally-banner cluster to `rally_*` for symmetry with the already-explicit `build_*` banner naming, killing the bare-`banners` reader trap (ambiguous against `build_banners` and the `pending_observe["banner"]` key). Pure whole-identifier rename, behavior identical, `validate_script` clean.
+	
+	- `banners` -> `rally_banners`
+	- `_drop_banner` -> `_drop_rally_banner`
+	- `_tick_banners` -> `_tick_rally_banners`
+	- `_march_toward_banner` -> `_march_toward_rally_banner`
+	
+	Substring hazard handled: all `build_*` banner identifiers (`build_banners`, `build_banners_used`, `_drop_build_banner`, `_tick_build_banners`, `_refresh_build_banner`, `_find_eligible_build_banner`) confirmed untouched. Rally-context prose comments still say "banners" — left as-is (non-ambiguous in context; no-opportunistic-cleanup).
+	
+	Remaining do-now cleanup: M1–M5 magic-number constant promotions (esp. `SPECK_SPAWN_CHANCE`).
+	
