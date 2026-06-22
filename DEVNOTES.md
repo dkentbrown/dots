@@ -1247,3 +1247,40 @@ Wire the move case in `_execute_primitive` to check `pending_observe`, match aga
 	
 	After gather: combat-walls pre-work (re-enable colony 1, verify F1/F2 with live data, then the combat mechanic). Tier B dedups remain deferred (no equivalence harness; disposable client). N4 wall->block parked.
 	
+
+---
+
+## Session Notes — 2026-06-22 (gather chant trigger — Option A shipped)
+
+### Shipped: gather chant trigger (speck -> gather composite now reachable)
+
+The Stage 2 `speck -> gather` composite is reachable in normal play. Four aliases added to `CHANT_RECIPES`, each co-raising `gather` AND `observe` by `CHANT_WEIGHT` (0.08):
+
+- `gather` / `collect` / `forage` / `harvest` -> `{ "action": { "gather": CHANT_WEIGHT, "observe": CHANT_WEIGHT } }`
+
+Pure data-row addition (four rows in `CHANT_RECIPES`). No executor, selection, or consumer change — the path was already wired (Stage 2, 2026-06-09): `OBSERVE_MOVE_MAP = { "speck": "gather" }`, the `move`-case consumer, and ambient collection all pre-existing and correct. The trigger was the only missing piece.
+
+### Why co-raise observe (the dependency)
+
+Inspection confirmed the gate is two independent rolls: a dot must (1) roll `observe` while a speck is in radius (writes `pending_observe.speck`), then (2) on a later tick roll `move` while `gather > 0` (consumes it via the directed-march branch). `pending_observe.speck` is ONLY written by `_execute_observe` on an observe roll — no other writer. Default observe is just 0.10 on `COLONY0_CCE`. Raising gather alone arms condition (2)'s gate but does nothing for (1), and dilutes observe's softmax share as gather grows. So gather-only would be reachable but near-dead. Co-raising observe makes it playable: more observe rolls -> more live speck observations -> more directed-move consumption.
+
+### Option A (accept the no-op tax), not B (pool-exclude first)
+
+`gather` has no `_execute_primitive` executor — when selected as a standalone verb it is a no-op (wasted tick); its only functional role is the gate weight read by the `move` consumer. With the flat softmax (raw exp, no temperature; 2026-06-08), one "gather" chant (gather -> 0.08) makes ~16% of that dot's rolls no-op gather picks; heavier chanting scales the tax (~20% at gather 0.40) while observe's share barely climbs. The tax roughly cancels the sensing benefit in useful-ticks terms.
+
+Chose A: ship the trigger now, accept the idle-tick tax, watch it in real play. Rationale is the project's data-before-hypotheses rule — the ~1-in-5-idle figure is a model prediction, not observed play. B (exclude gather from the selection pool so it's a pure gate, never rolled) is the clean end state but is a hot-path change to selection logic and earns its own inspection. If the idle reads badly in play, B becomes the next scoped change.
+
+### Verification
+
+- `validate_script` on `main.gd`: clean.
+- In-play (via `execute_game_script` against a live run, no scaffolding added to `main.gd`): chanting "gather" once raised colony-0 dots gather 0.0 -> 0.08, observe 0.10 -> 0.18 (both +CHANT_WEIGHT — confirms `_apply_recipe` raises both). A dot with a speck in observe radius then fired the directed-move branch — marched ~0.0316 toward the speck (~one cell-step; cell spacing 0.0314 — directed, not random drift), `pending_observe` cleared on consumption. Composite confirmed end-to-end for a player-driven chant.
+
+### Commit hygiene this session
+
+Pre-existing uncommitted `DEVNOTES.md` delta (the prior git/workflow-fix + gather-handoff note) was landed first as its own docs catch-up commit (`1611a92`) to keep it from fusing with this feature commit. This gather note plus the `main.gd` trigger are the feature commit on top.
+
+### Next / still open
+
+- Watch the gather no-op tax in real play; decide B (pool-exclude gather) with evidence if idle reads badly.
+- Combat-walls pre-work: re-enable colony 1, verify F1/F2 with live data, then the combat mechanic.
+- enemy/ally/banner observation consumers still unwired (`enemy -> attack` gated behind the combat-walls design). Distance-metric inconsistency still flagged, cosmetic.
