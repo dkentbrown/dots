@@ -1223,3 +1223,27 @@ Wire the move case in `_execute_primitive` to check `pending_observe`, match aga
 	
 	Shipped this session: landmine comment pass (`cffc384`), N1 rally-banner rename (`d2e4bce`), and these constant promotions (pending commit). Remaining catalog items all deliberately deferred: Tier B dedups/extractions (U1/U4/U5/U6/U7/U8/T1 — no behavioral-equivalence harness), N4 wall->block mass rename (project-parked), N5 + low-value constants/notes. F1 (collect_lock stall) and F2 (negative-modulo seam) remain parked as functional findings for combat-walls pre-work.
 	
+	
+	---
+	
+	## Session Notes — 2026-06-09 (cont., git/commit workflow fix + handoff)
+	
+	Resolved the recurring commit friction. Two root causes:
+	1. `settings.local.json` was auto-approving ALL state-changing git (`Bash(git *)`, `Bash(git add *)`, `Bash(git commit *)`) — the opposite of the intended manual checkpoint. Removed those; `add`/`commit`/`push`/`reset` now prompt. Added auto-approve for read-only git (`status`/`diff`/`log`), read-only inspection (`cat`/`sed`/`ls`/`grep`), and the temp commit-message write/cleanup. Config lives in git-ignored `settings.local.json` (personal preference, not committed).
+	2. Commit commands were `&&`-chained one-liners. Code's analyzer can't statically vet a compound chain (it warns "contains shell syntax that cannot be statically analyzed"), so the whole chain prompts regardless of allow rules — and the chaining is also what produced the heredoc / `cat -A` construction errors.
+	
+	**Standing commit convention (refined — apply going forward):**
+	- Run commit steps as SEPARATE commands, never `&&`-chained: `git status --short`, write the message file, `git add <files>`, `git commit -F <file>`, `git push`.
+	- Write the commit-message file via Code's file-write tool, NOT `printf`/heredoc with a shell redirect — avoids quoting/whitespace/indentation traps and the `/tmp` redirect-permission ambiguity.
+	- State-changing git prompts by design (the manual checkpoint). The planning layer specifies message content + conventions; Code authors the actual string in its own environment.
+	
+	Current HEAD: `995782c` (M1–M5 constants). The settings change is not a commit (git-ignored).
+	
+	### NEXT STEP (named): gather chant trigger
+	
+	Make the Stage 2 `speck -> gather` composite reachable in normal play. gather is currently unraisable: default weight 0, and no gather trigger in `CHANT_RECIPES` (DEVNOTES notes gather/build triggers were deliberately absent). The consumer is wired and correct; it just can't fire for a player.
+	
+	Start with an INSPECTION of the chant pipeline before any implementation — cover: `CHANT_RECIPES` schema; `_apply_recipe` (how a recipe modifies CCE, scope, decay); chant->recipe matching (`_process_input`/`_process_chant_locally`); WHY gather/build were omitted and whether gather (a non-rolled verb) is special; consumer interaction (gather>0 + pending speck observation -> directed move; gate is purely weight>0); and the key dependency — the composite needs BOTH gather>0 AND a recent `pending_observe` with a speck entry (which only exists if the dot also rolls `observe`), so a gather chant may need observe active too. Then design the trigger word and implement.
+	
+	After gather: combat-walls pre-work (re-enable colony 1, verify F1/F2 with live data, then the combat mechanic). Tier B dedups remain deferred (no equivalence harness; disposable client). N4 wall->block parked.
+	
