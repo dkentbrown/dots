@@ -443,15 +443,20 @@ func _tick_all_dots():
 			continue
 		var lock = dot_data[dot].get("collect_lock", null)
 		if lock != null:
-			if lock["until_tick"] == _tick_num:
-				if lock["speck"] in specks:
-					lock["speck"].queue_free()
-					specks.erase(lock["speck"])
-				# The soul credit sits OUTSIDE the speck-in-specks check on purpose.
-				# "The lock is the receipt": every resolved lock credits the pool whether
-				# or not the speck node survived, so simultaneous arrivers each credit.
-				var collector_colony = dot_data[dot]["colony"]
-				soul_pool[collector_colony] = soul_pool.get(collector_colony, 0) + 1
+			if lock["until_tick"] <= _tick_num:
+				if lock["until_tick"] == _tick_num:
+					# On-time resolution: pay out.
+					if lock["speck"] in specks:
+						lock["speck"].queue_free()
+						specks.erase(lock["speck"])
+					# The soul credit sits OUTSIDE the speck-in-specks check on purpose.
+					# "The lock is the receipt": every resolved lock credits the pool whether
+					# or not the speck node survived, so simultaneous arrivers each credit.
+					var collector_colony = dot_data[dot]["colony"]
+					soul_pool[collector_colony] = soul_pool.get(collector_colony, 0) + 1
+				# F1 late clear: the resolution tick was missed (combat preempted it), so
+				# until_tick < _tick_num now. Clear the lock without payout — no speck freed,
+				# no soul credited — so the dot resumes normal ticking instead of stalling.
 				dot_data[dot]["collect_lock"] = null
 			continue
 		_tick_dot(dot)

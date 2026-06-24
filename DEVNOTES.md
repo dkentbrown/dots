@@ -1327,3 +1327,48 @@ Pre-existing uncommitted `DEVNOTES.md` delta (the prior git/workflow-fix + gathe
 	- **Colony-1 re-enable — after F1.** `_spawn_enemy_colony` (main.gd:1227) places one founder 45° from the player via a single `_create_dot(enemy_dir, null, ENEMY_COLONY, COLONY1_CCE)`; it grows on its own reproduce (0.32). Re-enable is uncommenting main.gd:273 plus three deliberate override decisions: fog `return` (main.gd:1080), `full_inheritance=true` (main.gd:1286, makes CCE_DILUTION inert), `_apply_recipe` LOCAL_COLONY chant filter (main.gd:358-360). Plus enemy-preset call: single founder vs. seeded population. A second colony is wanted for ongoing dev work, so this lands rather than being reverted.
 	- **Stale-prose note (recorded, not acted on):** older DEVNOTES "MAD / both deleted on mutual" combat framing is inaccurate vs. the code — `_tick_combat_clusters` resolves deterministic single-death-per-pair, ties to attacker; not literal simultaneous mutual deletion.
 	
+	
+	---
+	
+	## Session Notes — 2026-06-24 (F1 collect_lock stall fix + batched pre-work push)
+	
+	### Shipped: F1 collect_lock stall fix
+	
+	The collect_lock stall (parked since 2026-06-09, confirmed static in the colony-1 pre-work inspection) is fixed. The bug: in `_tick_all_dots` the `combat_locked` guard precedes the collect_lock block, and the lock cleared only on the exact `until_tick == _tick_num` branch (lock set with `until_tick = _tick_num + 1`). A dot combat-locked on its exact resolution tick skipped the clear; next tick `== ` was permanently false, so the lock never cleared, the dot hit `continue` every tick thereafter (never re-entering `_tick_dot`), yet still aged to DOT_LIFETIME via `_age_dots` (unconditional). A silent frozen dot crediting nothing and acting never.
+	
+	Fix (collect_lock block only):
+	- Resolution condition `== ` -> `<=` so a lock at or past its resolution tick is always handled (cleared), never stranded.
+	- Payout (free speck + credit soul) nested inside an inner exact-`==` branch — fires on-time only.
+	- Late branch (`until_tick < _tick_num`, the missed-resolution case): clear the lock and do nothing else. No `queue_free`, no `specks.erase`, no `soul_pool` increment.
+	- Guard order (combat_locked -> is_wall -> collect_lock) and the `continue` placement unchanged.
+	- The on-time soul credit still sits OUTSIDE the `speck in specks` check, now scoped inside the `==` branch — the "lock is the receipt" simultaneous-arriver semantics are preserved exactly, only narrowed to the on-time case.
+	
+	### Semantics decision (combat preempts collection)
+	
+	Per the 2026-05-28 "clear without removing" intent: a collection preempted by combat is silently lost — the dot is released back to normal ticking, but the missed collection does NOT pay out. The speck stays on the board for another dot; no soul is credited for a late clear. Confirmed this direction explicitly with Dustan before implementation (the one genuine design fork inside the fix: late clear releases the dot only, vs. late clear still credits — chose release-only).
+	
+	### Verification
+	
+	`validate_script` on `main.gd`: clean. Static confirmation that the condition is `<=`, payout is gated to exact `==`, the late branch clears-and-nothing-else, and guard order + `continue` are unchanged. No game run — runtime confirmation of the actual stall (combat_locked firing on the exact resolution tick) needs two colonies in contact, i.e. a player-driven run once colony 1 is live; that is Dustan's to run, not Code's.
+	
+	### Commit / push grouping — READ THIS IF GIT HISTORY LOOKS ODD LATER
+	
+	F2 and F1 are SEPARATE commits but were PUSHED TOGETHER as one batch (Dustan's call — push the pre-work as a group rather than per-commit).
+	
+	Timeline, because the dates don't line up with a naive reading of the notes:
+	- F2 work was authored ~2026-06-22, but that session's commit prompt never executed (rate-limit pause; session ended on an unconfirmed commit). The F2 DEVNOTES note is dated 2026-06-22 "(cont.)" and says "this commit," narrating a commit that had not yet happened.
+	- A fresh Code session on 2026-06-24 re-oriented (DEVNOTES + git status), found the F2 work sitting uncommitted in the working tree, and committed it as `e3d1144`.
+	- F1 was implemented and committed immediately after on 2026-06-24.
+	- Both `e3d1144` (F2) and the F1 commit were pushed together on 2026-06-24.
+	
+	So if later archaeology shows F2 (`e3d1144`) and F1 committing/pushing within minutes of each other despite the F2 note reading 2026-06-22 — that is expected, not a lost/duplicated commit. The 2026-06-22 F2 note narrates work that actually landed 2026-06-24.
+	
+	Pre-work commit sequence as landed: `209e057` (gather trigger, pre-existing HEAD) -> `e3d1144` (F2 seam) -> [F1 stall] -> push. Colony-1 re-enable is the next pre-work step, a separate commit after.
+	
+	### Pre-work status / next
+	
+	- **F2 — done & pushed** (`e3d1144`).
+	- **F1 — done & pushed** (this commit).
+	- **Colony-1 re-enable — next.** Uncomment main.gd:273 (`_spawn_enemy_colony`) plus three deliberate override decisions: fog `return` (main.gd:1080), `full_inheritance=true` (main.gd:1286, dilution inert), `_apply_recipe` LOCAL_COLONY chant filter (main.gd:358-360); and the enemy-preset call (single founder vs. seeded population). A second colony is wanted for ongoing dev work, so this lands rather than reverts.
+	- **After pre-work:** the combat-walls mechanic design fork (keep the old self-scan attack vs. execute the 2026-05-13 observe-gated redesign), and separately the uniform-detection-radius inspection (the equirectangular distortion deferred from F2 — detection should cover the same real surface distance regardless of position on the sphere).
+	
