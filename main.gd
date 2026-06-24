@@ -1139,7 +1139,11 @@ func _is_blocked_by_foreign(dir: Vector3, my_colony: int) -> bool:
 	var key = _cell_key(dir)
 	for du in [-1, 0, 1]:
 		for dv in [-1, 0, 1]:
-			var neighbor = Vector2i((key.x + du) % GRID_RES, (key.y + dv) % GRID_RES)
+			# u wraps (longitude); v clamps (latitude — no pole wrap, see F2)
+			var ny = key.y + dv
+			if ny < 0 or ny > GRID_RES - 1:
+				continue
+			var neighbor = Vector2i((key.x + du + GRID_RES) % GRID_RES, ny)
 			if spatial_grid.has(neighbor):
 				for occupant in spatial_grid[neighbor]:
 					if dot_data.has(occupant) and dot_data[occupant]["colony"] != my_colony:
@@ -1152,7 +1156,11 @@ func _find_nearest_foreign_in_radius(dir: Vector3, my_colony: int, radius: int):
 	var best_dist = INF
 	for du in range(-radius, radius + 1):
 		for dv in range(-radius, radius + 1):
-			var neighbor = Vector2i((key.x + du) % GRID_RES, (key.y + dv) % GRID_RES)
+			# u wraps (longitude); v clamps (latitude — no pole wrap, see F2)
+			var ny = key.y + dv
+			if ny < 0 or ny > GRID_RES - 1:
+				continue
+			var neighbor = Vector2i((key.x + du + GRID_RES) % GRID_RES, ny)
 			if spatial_grid.has(neighbor):
 				for occupant in spatial_grid[neighbor]:
 					if dot_data.has(occupant) and dot_data[occupant]["colony"] != my_colony:
@@ -1171,7 +1179,11 @@ func _find_nearest_ally_in_radius(dir: Vector3, my_colony: int, radius: int, exc
 	var best_dist = INF
 	for du in range(-radius, radius + 1):
 		for dv in range(-radius, radius + 1):
-			var neighbor = Vector2i((key.x + du) % GRID_RES, (key.y + dv) % GRID_RES)
+			# u wraps (longitude); v clamps (latitude — no pole wrap, see F2)
+			var ny = key.y + dv
+			if ny < 0 or ny > GRID_RES - 1:
+				continue
+			var neighbor = Vector2i((key.x + du + GRID_RES) % GRID_RES, ny)
 			if spatial_grid.has(neighbor):
 				for occupant in spatial_grid[neighbor]:
 					if occupant == exclude:
@@ -1196,7 +1208,11 @@ func _get_foreign_dots_near(dir: Vector3, my_colony: int) -> Array:
 	var key = _cell_key(dir)
 	for du in [-1, 0, 1]:
 		for dv in [-1, 0, 1]:
-			var neighbor = Vector2i((key.x + du) % GRID_RES, (key.y + dv) % GRID_RES)
+			# u wraps (longitude); v clamps (latitude — no pole wrap, see F2)
+			var ny = key.y + dv
+			if ny < 0 or ny > GRID_RES - 1:
+				continue
+			var neighbor = Vector2i((key.x + du + GRID_RES) % GRID_RES, ny)
 			if spatial_grid.has(neighbor):
 				for occupant in spatial_grid[neighbor]:
 					if dot_data.has(occupant) and dot_data[occupant]["colony"] != my_colony:

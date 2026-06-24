@@ -1284,3 +1284,46 @@ Pre-existing uncommitted `DEVNOTES.md` delta (the prior git/workflow-fix + gathe
 - Watch the gather no-op tax in real play; decide B (pool-exclude gather) with evidence if idle reads badly.
 - Combat-walls pre-work: re-enable colony 1, verify F1/F2 with live data, then the combat mechanic.
 - enemy/ally/banner observation consumers still unwired (`enemy -> attack` gated behind the combat-walls design). Distance-metric inconsistency still flagged, cosmetic.
+	
+	---
+	
+	## Session Notes — 2026-06-22 (cont., F2 seam fix — combat-walls pre-work begins)
+	
+	### Context
+	
+	Combat-walls pre-work started, fix-first ordering: fix F2, then F1, then re-enable colony 1 into a clean environment. A read-only inspection first mapped the colony-1 re-enable surface and statically confirmed both parked findings (F1, F2) against the real code (line-anchored, quoted guards). This note covers the F2 fix; F1 and colony-1 re-enable follow as separate commits.
+	
+	### Shipped: F2 seam-scan fix (u wraps, v clamps)
+	
+	The four neighbor-enumeration scans computed wrapped coordinates as `(key.x + du) % GRID_RES` (same on `key.y`). GDScript `%` truncates toward zero (`-1 % 200 == -1`), so at the u=0/199 seam the negative coordinate never matched a real 0..199 key — the scan silently saw nothing across the seam. Fixed:
+	
+	- **u-axis (longitude):** `(key.x + du + GRID_RES) % GRID_RES` — genuine wrap, matching the reference idiom already in `_pick_lateral_cell`.
+	- **v-axis (latitude):** no wrap. Raw `key.y + dv`; if `< 0` or `> GRID_RES - 1`, skip the cell (`continue`). v is `asin`-derived; v=0 and v=199 are near opposite poles, so wrapping there would falsely connect opposite-pole cells.
+	
+	Four functions, one enumeration site each (all identical bug, identical fix):
+	- `_is_blocked_by_foreign` (~1142)
+	- `_find_nearest_foreign_in_radius` (~1155)
+	- `_find_nearest_ally_in_radius` (~1174)
+	- `_get_foreign_dots_near` (~1199)
+	
+	Return contracts unchanged — coordinate-computation fix only. Diff +20/-4.
+	
+	### Design call: detection follows actual surface proximity
+	
+	The u-wrap/v-clamp choice means detection respects real local proximity: longitude wraps (going east far enough returns you west), latitude does not (a north-pole dot and a south-pole dot are physically far apart and must not detect each other). Replaces one wrong behavior (phantom pole-crossing on v / silent seam-blindness on u) with locally-correct edge handling.
+	
+	### Scope boundary: seam logic only, NOT the grid distortion
+	
+	Deliberately deferred: the equirectangular distortion — a fixed integer-cell radius covers more real longitude near the poles than at the equator, because `_cell_key` quantizes longitude into GRID_RES columns at every latitude. v-clamp fixes the seam but does NOT make detection radius uniform in real surface distance. Design intent (this session) is that detection should cover the same real distance regardless of position on the sphere; that is a separate, broader change touching every radius-based scan and the cell-vs-angular-distance metric (`ATTACK_DETECT_RADIUS`, observe radius, `RALLY_RADIUS`, `BUILD_BANNER_RADIUS`, `_torus_cell_dist_sq` usage). It earns its own inspection before implementation — no behavioral-equivalence harness exists and Code cannot run the game, so the detection-model rework is not a fold-in. The scans still use box `(key - occ_key).length_squared()` with integer-cell radii, unchanged. This F2 fix is the clean starting point for that grid rework.
+	
+	### Verification
+	
+	`validate_script` on `main.gd`: clean. grep confirms the only remaining `(key.x + du) % GRID_RES` is line 1088 — the dead fog-reveal scan (below the `return` in `_check_fog_of_war`), deliberately left untouched; it carries the same bug and gets fixed if/when fog reveal is restored as part of the colony-1 decisions. `_pick_lateral_cell` and `_torus_cell_dist_sq` (already correct) untouched. No game run — behavioral confirmation across the seam (a dot detecting a foreign across u=0/199) requires two colonies in contact near the seam, which is a player-driven run, not Code's.
+	
+	### Pre-work status / next
+	
+	- **F2 — done** (this commit).
+	- **F1 — next.** collect_lock stall confirmed: in `_tick_all_dots` the `combat_locked` guard precedes the collect_lock block, and the lock clears only on the exact `until_tick == _tick_num` branch (lock set with `until_tick = _tick_num + 1`). A resolution tick skipped because combat fired first strands the lock forever — the dot hits `continue` every subsequent tick, never re-enters `_tick_dot`, but still ages (via `_age_dots`, unconditional) to DOT_LIFETIME and is removed. Agreed fix semantics (per 2026-05-28 "clear without removing"): clear the lock on `until_tick <= _tick_num`, but credit soul / free the speck only on exact `==` with the speck still present. Implementation prompt pending.
+	- **Colony-1 re-enable — after F1.** `_spawn_enemy_colony` (main.gd:1227) places one founder 45° from the player via a single `_create_dot(enemy_dir, null, ENEMY_COLONY, COLONY1_CCE)`; it grows on its own reproduce (0.32). Re-enable is uncommenting main.gd:273 plus three deliberate override decisions: fog `return` (main.gd:1080), `full_inheritance=true` (main.gd:1286, makes CCE_DILUTION inert), `_apply_recipe` LOCAL_COLONY chant filter (main.gd:358-360). Plus enemy-preset call: single founder vs. seeded population. A second colony is wanted for ongoing dev work, so this lands rather than being reverted.
+	- **Stale-prose note (recorded, not acted on):** older DEVNOTES "MAD / both deleted on mutual" combat framing is inaccurate vs. the code — `_tick_combat_clusters` resolves deterministic single-death-per-pair, ties to attacker; not literal simultaneous mutual deletion.
+	
