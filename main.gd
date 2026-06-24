@@ -270,7 +270,7 @@ func _ready():
 	_spawn_player_dot()
 	if TEST_MODE:
 		_spawn_test_population()
-	# _spawn_enemy_colony()  # disabled for build dev work
+	_spawn_enemy_colony()
 	_update_camera()
 	_update_hud()
 	chant_button.pressed.connect(_open_chant)
@@ -1081,8 +1081,6 @@ func _check_fog_of_war():
 	# Cheap early exit: known set size matches revealed set size
 	if revealed_colonies.size() >= known_colonies.size():
 		return
-	# TESTING: keep ENEMY_COLONY perpetually fogged for visual contrast
-	return
 	for dot in dots:
 		var colony = dot_data[dot]["colony"]
 		if colony == LOCAL_COLONY or revealed_colonies.get(colony, false):
@@ -1090,7 +1088,11 @@ func _check_fog_of_war():
 		var key = _cell_key(dot.position.normalized())
 		for du in [-1, 0, 1]:
 			for dv in [-1, 0, 1]:
-				var neighbor = Vector2i((key.x + du) % GRID_RES, (key.y + dv) % GRID_RES)
+				# u wraps (longitude); v clamps (latitude — no pole wrap, see F2)
+				var ny = key.y + dv
+				if ny < 0 or ny > GRID_RES - 1:
+					continue
+				var neighbor = Vector2i((key.x + du + GRID_RES) % GRID_RES, ny)
 				if spatial_grid.has(neighbor):
 					for occupant in spatial_grid[neighbor]:
 						if dot_data.has(occupant) and dot_data[occupant]["colony"] == LOCAL_COLONY:

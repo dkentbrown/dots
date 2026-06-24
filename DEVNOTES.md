@@ -1372,3 +1372,65 @@ Pre-existing uncommitted `DEVNOTES.md` delta (the prior git/workflow-fix + gathe
 	- **Colony-1 re-enable — next.** Uncomment main.gd:273 (`_spawn_enemy_colony`) plus three deliberate override decisions: fog `return` (main.gd:1080), `full_inheritance=true` (main.gd:1286, dilution inert), `_apply_recipe` LOCAL_COLONY chant filter (main.gd:358-360); and the enemy-preset call (single founder vs. seeded population). A second colony is wanted for ongoing dev work, so this lands rather than reverts.
 	- **After pre-work:** the combat-walls mechanic design fork (keep the old self-scan attack vs. execute the 2026-05-13 observe-gated redesign), and separately the uniform-detection-radius inspection (the equirectangular distortion deferred from F2 — detection should cover the same real surface distance regardless of position on the sphere).
 	
+	
+	---
+	
+	## Session Notes — 2026-06-24 (cont., enemy colony 1 re-enabled — combat-walls pre-work complete)
+	
+	### Shipped: enemy colony 1 re-enabled (single bundled commit)
+	
+	The last pre-work step. Colony 1 is turned back on after being dark since ~2026-05-09 (commented out for single-colony build dev). Three edits in `main.gd`, one commit:
+	
+	- **EDIT A — fog reveal restored.** Removed the `# TESTING:` comment + bare `return` short-circuit in `_check_fog_of_war`. The legitimate early-exit (`revealed_colonies.size() >= known_colonies.size()`) stays. Enemy now renders fogged grey until a LOCAL_COLONY dot reaches its 3x3 neighborhood, then permanently reveals + recolors (`_update_all_dot_colors`). Per-colony reveal, no re-fog path.
+	- **EDIT A' — seam patch on the now-live fog scan.** Restoring reveal activated the one remaining bare-negative-modulo neighbor scan (the F2 bug, deliberately left dead below the `return` during the F2 fix). Patched with the identical F2 idiom (u-wrap `(key.x + du + GRID_RES) % GRID_RES`, v-clamp range-skip). **Milestone: this was the fifth and final application — a file-wide grep now shows ZERO bare `(key.x + du) % GRID_RES` scans remaining. The F2 seam class is fully eradicated.**
+	- **EDIT B — spawn uncommented.** `_spawn_enemy_colony()` re-enabled in `_ready()`, call site unmoved (after `_spawn_player_dot()` so `player_dot` exists when read). Single founder placed 45° (PI/4) from the player; grows on its own reproduce (0.32). Function body and `COLONY1_CCE` untouched.
+	
+	### Settled override decisions (the four touch-points)
+	
+	1. **Fog — RESTORED** (reveal-on-contact). Want to see contact happen during dev work.
+	2. **Dilution — KEPT INERT.** `_spawn_dot_near` still passes `full_inheritance=true`, so `CCE_DILUTION = 0.7` stays bypassed; both colonies breed true. Clean verification first; flip to realistic generational decay later as its own deliberate change.
+	3. **Chant filter — KEPT.** `_apply_recipe`'s `!= LOCAL_COLONY -> continue` filter stays; the enemy is un-chantable. (A second identical guard exists at a later recipe-apply block; also untouched.)
+	4. **Spawn shape — SINGLE FOUNDER.** Not a seeded cluster. Deliberate: a lone P1 dot doubly exercises reproduce + wander to establish itself, making the re-enable a live test of those paths, not just a sparring dummy.
+	
+	### Expected first-run behavior (for whoever runs it)
+	
+	- P1 founder spawns 45° from the player, renders fogged grey.
+	- Combat runs via the OLD model — `_execute_attack`'s own self-scan (`ATTACK_DETECT_RADIUS = 10`); observe is NOT wired to combat detection yet, so the enemy's `observe 0.10` is currently inert (costs softmax share as idle observe rolls, feeds no combat behavior). The 2026-05-13 observe-gated combat redesign is still spec-only.
+	- On contact: a P0 dot reaching P1's 3x3 neighborhood reveals colony 1 permanently and recolors all dots.
+	- Combat resolution is deterministic single-death-per-pair, ties to attacker (NOT the stale "MAD/both deleted" prose in older notes).
+	
+	### IMPORTANT: combat path is runtime-unexercised against the current tree
+	
+	This is the first time the combat system runs since it went dark — before the observe refactor, the softmax selection rewrite, and the `move`/`build` renames. Static reads (this session + pre-work) say it's consistent and verb-name-clean, but "compiles and reads correctly" is not "has run against the current tree." The first live two-colony run is a genuine observation session, not a formality. Three reactivated paths to watch:
+	- Fog reveal-on-contact (now seam-correct).
+	- The full combat path (initiation, clusters, resolution, rally banners) against the newer softmax selection model.
+	- The **F1 late-clear** — only fires when `combat_locked` collides with a collect_lock resolution tick (low-incidence race). Re-enable is the first scenario that can exercise it at runtime; absence in any given run just means the race didn't occur, not a defect.
+	
+	Behavioral confirmation is the player's run; Code's ceiling is `validate_script` (no game execution).
+	
+	### Verification
+	
+	`validate_script` on `main.gd`: clean. Grep: zero remaining bare-modulo scans. Dilution and chant filter confirmed unchanged. `M main.gd` only. No game run.
+	
+	### Pre-work status — COMPLETE
+	
+	- **F2 seam — done & pushed** (`e3d1144`).
+	- **F1 collect_lock stall — done & pushed** (`2fccd1d`).
+	- **Colony-1 re-enable — done** (this commit, local; push deferred pending telemetry-parsed confirmation, see below).
+	
+	### Next: persistent telemetry artifact, then live run, then push decision
+	
+	Plan agreed this session — push of the re-enable is HELD until parsed telemetry says the reactivation behaves:
+	1. (this commit) Re-enable, local only.
+	2. Scope + implement a PERSISTENT JSON state-dump (population per colony, soul_pool, combat events, reveal events, and an explicit log when the F1 late-clear branch fires) — kept as reusable dev instrumentation, not throwaway scaffolding. Its own commit.
+	3. Player runs the game long enough for combat/capture to occur.
+	4. Parse the JSON to judge whether the reactivation is push-worthy.
+	5. Decide the push (both re-enable + telemetry, or revisit) with data in hand.
+	
+	Then (after pre-work): the combat-walls mechanic design fork (keep old self-scan attack vs. execute the 2026-05-13 observe-gated redesign), and the uniform-detection-radius inspection (equirectangular distortion deferred from F2 — detection should cover the same real surface distance regardless of position on the sphere).
+	
+	### Infrastructure changes this session (record for fresh sessions)
+	
+	- **Project root moved:** now `/Users/fd2023/Desktop/dkentbrown.dev/Dots/dots/` (was `/Users/fd2023/Desktop/Dots/dots/`). The inner `dots/` is the git repo root and Claude Code's launch dir (for `.mcp.json` / `CLAUDE.md`).
+	- **GitHub remote renamed:** `origin` is now `git@github.com:dkentbrown/dots.git` (was `UndoneIridium/dots`). The GitHub account was renamed; the old URL only worked via GitHub's redirect. `git remote set-url origin` already applied locally and verified — pushes now go direct, no redirect dependency.
+	
