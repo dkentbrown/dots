@@ -76,6 +76,11 @@ const TEST_POPULATION = 15
 # Logging \u2014 independent of TEST_MODE so we can log organic runs too
 const LOG_ENABLED = true
 const LOG_FILE = "res://build_log.txt"
+# Telemetry — persistent JSONL dev instrumentation, separate gate from LOG_ENABLED.
+# NOT truncated at launch (runs accumulate; a run_start record segments them).
+const TELEMETRY_ENABLED = true
+const TELEMETRY_FILE = "res://telemetry.jsonl"
+const TELEMETRY_SNAPSHOT_INTERVAL = 1   # snapshot every N ticks; 1 = every tick
 var _next_dot_id = 1
 var _tick_num = 0
 
@@ -267,6 +272,8 @@ func _ready():
 		if f:
 			f.store_string("")
 			f.close()
+	# Telemetry is persistent (not wiped); a run_start record segments accumulated runs.
+	_telemetry({ "type": "run_start", "run_id": int(Time.get_unix_time_from_system()), "grid_res": GRID_RES })
 	_spawn_player_dot()
 	if TEST_MODE:
 		_spawn_test_population()
@@ -328,6 +335,19 @@ func _process(delta):
 		_tick_specks()
 		_tick_all_dots()
 		_update_hud()
+		# Post-tick state snapshot (after all mutations resolve). Captures ALL colonies.
+		if _tick_num % TELEMETRY_SNAPSHOT_INTERVAL == 0:
+			_telemetry({
+				"type": "snapshot",
+				"tick": _tick_num,
+				"pop": colony_counts.duplicate(),
+				"soul": soul_pool.duplicate(),
+				"walls": wall_counts.duplicate(),
+				"combat_active": combat_clusters.size(),
+				"combat_locked": combat_locked.size(),
+				"revealed": revealed_colonies.keys(),
+				"specks": specks.size()
+			})
 
 # --- Chant file ---
 
@@ -457,6 +477,8 @@ func _tick_all_dots():
 				# F1 late clear: the resolution tick was missed (combat preempted it), so
 				# until_tick < _tick_num now. Clear the lock without payout — no speck freed,
 				# no soul credited — so the dot resumes normal ticking instead of stalling.
+				if lock["until_tick"] < _tick_num:
+					_telemetry({ "type": "f1_fired", "tick": _tick_num, "colony": dot_data[dot]["colony"], "until_tick": lock["until_tick"], "dot_id": dot_data[dot].get("dot_id", -1) })
 				dot_data[dot]["collect_lock"] = null
 			continue
 		_tick_dot(dot)
@@ -598,6 +620,7 @@ func _initiate_combat(attacker: Node3D, defender: Node3D, intensity: float):
 	var contact_cell = _cell_key(defender.position.normalized())
 	_drop_rally_banner(contact_cell, dot_data[attacker]["colony"])
 	_drop_rally_banner(contact_cell, dot_data[defender]["colony"])
+	_telemetry({ "type": "combat_init", "tick": _tick_num, "attacker_colony": dot_data[attacker]["colony"], "defender_colony": dot_data[defender]["colony"], "cell": [contact_cell.x, contact_cell.y], "intensity": intensity })
 
 func _march_toward(dot: Node3D, my_dir: Vector3, target: Node3D, my_colony: int):
 	var target_dir = target.position.normalized()
@@ -939,6 +962,18 @@ func _tick_combat_clusters():
 				var a_power = dot_data[attacker]["cce"]["action"].get("attack", 0.0) + dot_data[attacker]["cce"]["action"].get("defend", 0.0)
 				var d_power = dot_data[defender]["cce"]["action"].get("attack", 0.0) + dot_data[defender]["cce"]["action"].get("defend", 0.0)
 				var defender_is_wall = dot_data[defender].get("is_wall", false)
+				# Capture colonies BEFORE any _remove_dot (deletions are deferred to to_delete below).
+				var _resolve_cell = _cell_key(defender.position.normalized())
+				_telemetry({
+					"type": "combat_resolve",
+					"tick": _tick_num,
+					"winner_colony": dot_data[attacker]["colony"] if a_power >= d_power else dot_data[defender]["colony"],
+					"loser_colony": dot_data[defender]["colony"] if a_power >= d_power else dot_data[attacker]["colony"],
+					"a_power": a_power,
+					"d_power": d_power,
+					"defender_was_wall": defender_is_wall,
+					"cell": [_resolve_cell.x, _resolve_cell.y]
+				})
 				if a_power >= d_power:
 					to_delete[defender] = true
 					if defender_is_wall:
@@ -1098,6 +1133,7 @@ func _check_fog_of_war():
 						if dot_data.has(occupant) and dot_data[occupant]["colony"] == LOCAL_COLONY:
 							revealed_colonies[colony] = true
 							print("Colony %d revealed!" % colony)
+							_telemetry({ "type": "reveal", "tick": _tick_num, "colony": colony })
 							_update_all_dot_colors()
 							return
 
@@ -1265,6 +1301,20 @@ func _log(line: String):
 			return
 	f.seek_end()
 	f.store_string(line + "\n")
+	f.close()
+
+# Persistent JSONL telemetry — dedicated, NOT an extension of _log. One JSON object
+# per line, appended as it happens; never truncated (persistence is the point).
+func _telemetry(record: Dictionary):
+	if not TELEMETRY_ENABLED:
+		return
+	var f = FileAccess.open(TELEMETRY_FILE, FileAccess.READ_WRITE)
+	if f == null:
+		f = FileAccess.open(TELEMETRY_FILE, FileAccess.WRITE)
+		if f == null:
+			return
+	f.seek_end()
+	f.store_string(JSON.stringify(record) + "\n")
 	f.close()
 
 func _spawn_test_population():

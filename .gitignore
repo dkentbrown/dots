@@ -23,5 +23,8 @@ chant.json
 # Test-mode build mechanic telemetry
 build_log.txt
 
+# Persistent JSONL run telemetry (instrumentation code is committed, output is not)
+telemetry.jsonl
+
 # MCP server config
 .mcp.json

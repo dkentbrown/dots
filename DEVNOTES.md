@@ -1434,3 +1434,52 @@ Pre-existing uncommitted `DEVNOTES.md` delta (the prior git/workflow-fix + gathe
 	- **Project root moved:** now `/Users/fd2023/Desktop/dkentbrown.dev/Dots/dots/` (was `/Users/fd2023/Desktop/Dots/dots/`). The inner `dots/` is the git repo root and Claude Code's launch dir (for `.mcp.json` / `CLAUDE.md`).
 	- **GitHub remote renamed:** `origin` is now `git@github.com:dkentbrown/dots.git` (was `UndoneIridium/dots`). The GitHub account was renamed; the old URL only worked via GitHub's redirect. `git remote set-url origin` already applied locally and verified — pushes now go direct, no redirect dependency.
 	
+	
+	---
+	
+	## Session Notes — 2026-06-24 (cont., persistent JSONL telemetry artifact)
+	
+	### Shipped: persistent telemetry instrumentation (telemetry.jsonl)
+	
+	Reusable dev instrumentation to parse after a live run rather than eyeballing the sphere — built ahead of the first two-colony run so the colony-1 reactivation can be judged from data. Dedicated, NOT an extension of `_log` (which is plain-text, build-scoped, LOCAL_COLONY-only, and wiped each launch).
+	
+	**New constants** (beside `LOG_*`): `TELEMETRY_ENABLED = true`, `TELEMETRY_FILE = "res://telemetry.jsonl"`, `TELEMETRY_SNAPSHOT_INTERVAL = 1` (snapshot every N ticks).
+	
+	**Writer** `_telemetry(record)`: opens `TELEMETRY_FILE` READ_WRITE (create-via-WRITE fallback), `seek_end`, `JSON.stringify(record) + "
+"`, close. Defensive double-null return. **Never truncates** — persistence is the point.
+	
+	**Format: JSONL** (one complete JSON object per line). Chosen over a single JSON blob specifically because the run is killed by closing the game — each line is independently parseable, so whatever was captured before the kill survives intact.
+	
+	**Persistent across runs.** Runs accumulate into one file; a `run_start` boundary record (written once in `_ready`, `run_id` = Unix timestamp, plus `grid_res`) segments them at parse time. Output is gitignored (instrumentation code committed; run data not).
+	
+	**Record types:**
+	- `run_start` — `{run_id, grid_res}`, once per launch.
+	- `snapshot` — once per tick at the END of the tick block (post-mutation, after `_tick_all_dots`/`_update_hud`): `{tick, pop, soul, walls, combat_active, combat_locked, revealed, specks}`. Aggregate dicts `.duplicate()`'d to avoid aliasing live state. Covers ALL colonies (unlike `_log`). `combat_active` reads clusters still in-flight at tick end (combats that resolved this tick already cleared); transitions are captured by the events below.
+	- `combat_init` — at `_initiate_combat`: `{tick, attacker_colony, defender_colony, cell, intensity}`.
+	- `combat_resolve` — in `_tick_combat_clusters`, between power computation and the win/loss branch (colonies read BEFORE deferred `_remove_dot`): `{tick, winner_colony, loser_colony, a_power, d_power, defender_was_wall, cell}`.
+	- `f1_fired` — in the F1 late-clear branch of `_tick_all_dots` (guarded by `until_tick < _tick_num`; the unconditional lock-clear is byte-identical): `{tick, colony, until_tick, dot_id}`. Makes the invisible F1 race greppable. `dot_id` read defensively (`.get(..., -1)`; absent in organic runs).
+	- `reveal` — at the fog reveal set in `_check_fog_of_war`: `{tick, colony}`.
+	
+	All six hooks are purely additive — no control flow, combat resolution, collect_lock, or fog logic changed at any site. Verified against the actual file (planning layer read source directly this once because the Code report arrived garbled and hook placement in new persistence infra needed confirmation; not a standing practice — Code-report-driven review is the norm).
+	
+	### Parse notes (for analysis)
+	
+	- `JSON.stringify` stringifies int dict keys: `pop`/`soul`/`walls` parse as `{"0":..., "1":...}`; `revealed` is an int array.
+	- Segment runs by `run_start` boundaries; discard prior runs at parse time.
+	- `combat_active`/`combat_locked` in a snapshot = in-flight at tick end; pair with `combat_init`/`combat_resolve` events for the full combat picture.
+	
+	### Watch-item (not a blocker)
+	
+	`_telemetry` opens/seeks/closes per record. Snapshots fire every tick and combat events per resolving pair across both colonies, so heavy two-colony combat = potentially hundreds of open/close cycles per tick. At `TICK_SPEED = 1.0` this is almost certainly fine and won't corrupt records (each fully written before close), but a visible hitch during a big fight would point here; fix is holding the handle open or batching. Not pre-optimized.
+	
+	### Plan status (push still held)
+	
+	The push of BOTH the re-enable (`59db728`) and this telemetry commit stays held until parsed telemetry confirms the reactivation behaves. Sequence:
+	1. Re-enable — committed local (`59db728`).
+	2. Telemetry — this commit (local).
+	3. Player runs the game long enough for combat/capture to occur.
+	4. Parse `telemetry.jsonl` (segment by latest `run_start`): does P1 spawn, reproduce, wander, get revealed on contact; does combat initiate and resolve sanely; does `f1_fired` ever appear.
+	5. Decide the push (both commits, or revisit) with data in hand.
+	
+	After that: combat-walls mechanic design fork, and the uniform-detection-radius inspection (equirectangular distortion deferred from F2).
+	
