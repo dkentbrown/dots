@@ -1483,3 +1483,46 @@ Pre-existing uncommitted `DEVNOTES.md` delta (the prior git/workflow-fix + gathe
 	
 	After that: combat-walls mechanic design fork, and the uniform-detection-radius inspection (equirectangular distortion deferred from F2).
 	
+	
+	---
+	
+	## Session Notes — 2026-06-24 (cont., N4 wall→block rename + combat-walls grounding)
+	
+	### Context: first two-colony telemetry run analyzed
+	
+	Before the rename, the held re-enable + telemetry commits were exercised by the first live two-colony run (telemetry.jsonl, run_id 1783011133, 146 ticks). Grounded findings from reading the artifact directly:
+	- **Instrumentation confirmed working** — 417 valid JSONL records, run_start + per-tick snapshot + all four events firing (reveal @ t66, combat_init/combat_resolve with sane winner/loser/power/cell payloads, defender_was_wall flipping correctly). f1_fired never fired (expected — low-incidence race, didn't land in this window).
+	- **F2 seam fix validated in the wild** — combat clusters resolved correctly at u=192–199 (right on the u=0/199 seam F2 was blind to). Fix-first ordering paid off exactly where predicted.
+	- **Observations (recorded as observations, NOT balance conclusions from one run):** both colonies grow; P1 reaches the shared MAX_POPULATION_PER_COLONY=1000 cap at t76 and pins there (cap is colony-agnostic, not a combat lever). P0 never nears the cap because build rolls consume its activity budget. Once P0's build ramps, combat_resolve records flip to defender_was_block(was_wall):true / winner:0 — blocks at defend 0.5 beat attackers at attack 0.4. P0 block count climbed to ~2807, still rising. This is the build-monument system, NOT a combat-walls mechanic — which triggered the rename below. Balance conclusions need more runs (vary presets, longer windows) before any fix; one run does not establish a bug.
+	
+	### Combat-walls grounding: ZERO implementation exists
+	
+	An inspection searched the full codebase (not just "wall" tokens — also the 2026-05-13 spec vocabulary: waller, WALLER_TRIGGER_SCALE, rider, mesh variants, plus generic barrier/fortify/blockade terms) and confirmed: **there is no combat-wall implementation, partial or whole, under any name.** Every "wall" token in code is the build/monument (now block) system, plus exactly one reservation comment. Structural corroboration: only two banner arrays (rally + build, no "wall banner"); observe consumers sensed-but-dormant with no enemy→attack wiring; combat path has no defense structure beyond the block-defender advance rule. DEVNOTES spec status markers agree (Defense/rider/wall-mesh/wall-banner all UNIMPLEMENTED / DESIGN PENDING). Of the 2026-05-13 foundation, only the observe primitive landed — it carries no wall vocabulary. **The "wall" namespace in code is now free for the future combat-walls mechanic.**
+	
+	### Shipped: N4 wall→block mass rename (un-parked)
+	
+	Un-parks the previously-cataloged "N4 wall→block mass rename." Pure rename, zero behavior change (verified: diff-filtering for changed lines without a wall/block token yielded exactly one line — the retired "will rename later" marker). Vocabulary split now enforced in code:
+	- **block** = the unit (one placed cube). Was "wall".
+	- **monument** = the stacked structure of blocks (BUILD_MONUMENT_* — already correct, unchanged).
+	- **wall** = reserved, unclaimed in code, for the future combat-walls mechanic.
+	
+	Renamed (main.gd only): is_wall→is_block; WALL_DEFEND_VALUE/DECAY_TICKS/MESH_SIZE/HEIGHT_STEP → BLOCK_*; wall_counts→block_counts; _create_wall→_create_block; _count_walls_in_cell→_count_blocks_in_cell; banner wall_cap/wall_count→block_cap/block_count; locals defender_is_wall→defender_is_block, wall_cell→block_cell, p0_walls→p0_blocks; ~15 descriptive comments; log/HUD strings. The defender_is_wall combat-resolution branch was renamed to defender_is_block (it is block code — blocks incidentally defending, the E2 behavior — NOT combat-wall code to carve out).
+	
+	**Telemetry schema rename (D1, decided):** snapshot key "walls"→"blocks", combat_resolve key "defender_was_wall"→"defender_was_block". Landed before the telemetry commit was pushed. The gitignored telemetry.jsonl from the first run carries OLD keys; post-rename runs carry new keys — segment by run_start when parsing (heterogeneous keys across the run boundary, no live parser to break).
+	
+	Verification: validate_script clean (also proves identifier consistency); case-insensitive grep for "wall" returns exactly ONE surviving token — the reservation comment (now main.gd:722, shifted −2 after the marker retirement): "(combat-walls design pending, see DEVNOTES 2026-05-13)". Namespace clean save for that intentional reservation.
+	
+	### Parked (combat-walls design questions, NOT touched by rename)
+	
+	- **E1** — _apply_recipe filters on colony only, so P0 chants mutate P0 *block* CCEs; a defend-raising chant strengthens existing monuments in combat. Chant-buffed monuments are already de facto combat walls. The combat-walls design must reconcile this.
+	- **E2** — the monument/combat-wall conflation lives in UNFILTERED scans (_find_nearest_foreign_in_radius, _get_foreign_dots_near, _is_foreign_in_exact_cell, _is_blocked_by_foreign, _check_fog_of_war, _compute_colony_center, _execute_observe) that never check is_block. Blocks act as combat defenders / movement blockers / fog contacts / colony-center mass / rally triggers / observe-"enemy" targets purely because these scans treat them as ordinary foreign dots. The rename relabels this; it does NOT partition it. When combat walls are designed, EACH scan site becomes an explicit "blocks, combat walls, or both?" decision.
+	- Pre-existing comment inaccuracy preserved verbatim (pure rename): _create_block's "same-colony blocks" comment vs. code counting any-colony occupants.
+	
+	### Commit / push status
+	
+	Three commits pushed together this session (user-approved batch push): 59db728 (re-enable), 4b8dfc2 (telemetry), + this rename commit. After the held gate cleared (first run parsed, instrumentation + seam fix confirmed), all three went to origin as a group.
+	
+	### Next
+	
+	Combat-walls mechanic design — now unblocked (namespace free, E1/E2 boundary mapped). Separately: the uniform-detection-radius inspection (equirectangular distortion deferred from F2). And a combat-balance question raised but NOT settled: does the block-defender-beats-attacker / reproduction-rate asymmetry replicate across runs — needs more data before any fix.
+	
