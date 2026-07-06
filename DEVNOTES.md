@@ -1526,3 +1526,51 @@ Pre-existing uncommitted `DEVNOTES.md` delta (the prior git/workflow-fix + gathe
 	
 	Combat-walls mechanic design — now unblocked (namespace free, E1/E2 boundary mapped). Separately: the uniform-detection-radius inspection (equirectangular distortion deferred from F2). And a combat-balance question raised but NOT settled: does the block-defender-beats-attacker / reproduction-rate asymmetry replicate across runs — needs more data before any fix.
 	
+	
+	---
+	
+	## Session Notes — 2026-06-24 (cont., observe-consumption grounding for combat-detection fork)
+	
+	### Purpose
+	
+	Grounding pass (read-only inspection, no code) to answer precisely: how is an observe tick produced and consumed today, and does combat detection route through it? This settles the combat-detection design fork on real code rather than recollection, ahead of combat-walls design. DEVNOTES' own "each is later a one-line map entry" note (re: wiring observe slots to verbs) was found to be optimistic — see below.
+	
+	### How observe is produced and consumed (grounded, main.gd)
+	
+	**Two separate softmax draws.** observe and its consumption are not one action:
+	
+	1. **Production** — `_execute_observe(dot)` runs when the softmax picks "observe". Scan radius is weight-scaled: `radius = int(OBSERVE_BASE_RADIUS + OBSERVE_SCALE * observe_weight)` (3 + 20·w cells). It scans four slots — enemy (`_find_nearest_foreign_in_radius`), speck (linear scan, specks aren't grid-indexed), ally (`_find_nearest_ally_in_radius`, same-colony, excludes self+blocks), banner (nearest active same-colony build banner) — and writes ALL FOUR to `dot_data[dot]["pending_observe"]` every observe tick (unfound = null), overwriting any prior observation. Per-dot, single dict, all keys always present. Entry shapes: enemy/ally carry "dot", speck carries "node", banner carries "cell"; all carry "pos".
+	
+	2. **Consumption** — `pending_observe` is READ in exactly ONE place: the "move" case of `_execute_primitive`. Gated by `OBSERVE_MOVE_MAP`, whose entire contents are `{ "speck": "gather" }`. On a later move roll: iterate mapped slots, skip nulls, look up the mapped verb's CCE weight, keep the highest non-zero, and if any survives march one CELL_STEP toward `pending[best_key]["pos"]` and null the WHOLE `pending_observe`. Otherwise fall through to undirected wander/spiral.
+	
+	**Only speck is consumed. enemy, ally, banner are written every observe tick and read by NOTHING** — sensed-but-dead. (The `gather` verb that gates the speck path has no executor of its own; its only live effect in the engine is gating this directed move.)
+	
+	### Combat detection does NOT route through observe
+	
+	`_execute_attack` does not read `pending_observe` at all. It self-scans independently: `_find_nearest_foreign_in_radius(my_dir, my_colony, ATTACK_DETECT_RADIUS)` with `ATTACK_DETECT_RADIUS = 10` (fixed, unrelated to observe weight). Found → initiate combat if within `_get_foreign_dots_near` adjacency, else march toward; not found → rally-banner fallback.
+	
+	**Two fully independent sensing paths coexist:** the P(r)-driven observe layer (weight-scaled radius, feeds only gather) and attack's self-scan (fixed radius 10, feeds combat). They share the helper `_find_nearest_foreign_in_radius` but call it with different radii and share no state. An enemy's observe rolls feed no combat behavior today — inert softmax share.
+	
+	### The combat-detection fork, grounded (NOT resolved — user's call)
+	
+	The fork is NOT "should detection route through P(r)" (observe already is on P(r)). It is: **does combat detection keep attack's free fixed-radius self-scan, or consume `pending_observe.enemy` the way move consumes speck (observe-gated detection, attack loses self-scan — the 2026-05-13 redesign)?**
+	
+	Concretely, to make it observe-gated:
+	- **Consumer:** NOT literally a one-line `OBSERVE_MOVE_MAP` add. The current consumer (move case) only produces a directed MARCH; `speck→gather` works because gather is just directed movement. `enemy→attack` needs actual combat initiation (adjacency test, combat_locked guard, `_initiate_combat`), which the move-consumer does not do. So either repoint `_execute_attack` to read the slot, or build a genuine attack-verb consumer path. DEVNOTES' "one-line map entry" optimism is corrected here.
+	- **Remove from `_execute_attack`:** the self-scan target line; `ATTACK_DETECT_RADIUS` becomes dead (detection range would then derive from observe weight). The rally fallback, combat_locked guard, adjacency test, and initiate/march branch stay — only the target SOURCE changes.
+	- **Build-on:** `_execute_observe` already writes `pending_observe.enemy` every observe tick (weight-scaled radius) — the write exists and is live; only the READ is missing. Plus a clear-on-consume rule for the enemy slot (speck nulls the whole dict; enemy needs its own consistent rule).
+	
+	**The trade-off the fork encodes (this is the gameplay decision, needs user):** self-scan = every attacker gets free, fixed-radius, always-on enemy omniscience regardless of what it rolls. Observe-gated = a colony must SPEND softmax share on observe to see enemies, detection range scales with observe weight, and a colony that doesn't observe is blind and cannot fight. This directly interacts with the parked combat-balance question (does the P1-fights-freely asymmetry replicate?) — observe-gating makes sensing a costed action, changing aggression dynamics.
+	
+	### Related flags (recorded, not resolved)
+	
+	- **Radius-semantics side effect:** switching detection source silently changes detection range (fixed 10 vs. weight-scaled 3+20w). Interacts with the still-pending uniform-detection-radius inspection (equirectangular distortion deferred from F2).
+	- **Clear-on-consume differs per design:** speck nulls the whole `pending_observe`; an enemy consumer in `_execute_attack` (a different verb than move) needs its own explicit clear rule or observations go stale across ticks.
+	- **Distance-metric inconsistency (cosmetic, pre-existing):** `_find_nearest_foreign_in_radius` / `_find_nearest_ally_in_radius` use a non-wrapping box metric; `_torus_cell_dist_sq` (speck/banner) wraps. The enemy slot is populated by the box-metric helper.
+	
+	### Status / next
+	
+	- Grounding complete; tree clean, origin current (nothing to commit from this pass — inspection only).
+	- **DECISION PENDING (user):** self-scan vs. observe-gated combat detection. This is the load-bearing fork for combat-walls design and should be decided on the balance implication (costed sensing), ideally alongside more combat-balance run data, not on architectural elegance alone.
+	- Once decided, combat-walls mechanic design proceeds (E1 chant-buffed-blocks and E2 unfiltered-scan boundary reconciliation both feed into it).
+	
