@@ -1574,3 +1574,107 @@ Pre-existing uncommitted `DEVNOTES.md` delta (the prior git/workflow-fix + gathe
 	- **DECISION PENDING (user):** self-scan vs. observe-gated combat detection. This is the load-bearing fork for combat-walls design and should be decided on the balance implication (costed sensing), ideally alongside more combat-balance run data, not on architectural elegance alone.
 	- Once decided, combat-walls mechanic design proceeds (E1 chant-buffed-blocks and E2 unfiltered-scan boundary reconciliation both feed into it).
 	
+	
+	---
+	
+	## Session Notes — 2026-07-07 (combat-detection fork resolved — observe-gated, shipped + verified live)
+	
+	### Context
+	
+	Fresh session, resumed from the 2026-06-24 observe-consumption grounding note. The load-bearing combat-detection fork (self-scan vs. observe-gated) was DECISION PENDING at that note's close. This session: decided, planned, implemented, diagnosed, verified live, committed, pushed.
+	
+	### Decision: observe-gated (2026-05-13 spec direction)
+	
+	Dustan chose observe-gated over keeping attack's fixed self-scan. `_execute_attack` no longer scans independently — combat detection now costs softmax share on `observe`, matching the original design intent that observation is universally meaningful.
+	
+	### Report-delivery convention change (infrastructure)
+	
+	Two consecutive Code reports pasted through chat corrupted in transit — words merged, sentences truncated at line-wrap points; short fenced code blocks survived, long prose did not. Root cause never fully isolated (terminal soft-wrap vs. copy-paste), so the fix routes around the whole chain: **Code now writes every report (INSPECTION/IMPLEMENTATION/TRIVIAL) to `res://code_report.md`, overwritten each task, gitignored, never staged. The planning layer reads it directly via `read_script` instead of requiring the user to paste it in chat.** Recorded as a standing memory edit. Does not change the separate rule against the planning layer reading `.gd` source to reason about logic — report files only.
+	
+	### Shipped: `_execute_attack` reads `pending_observe["enemy"]`
+	
+	Single-site change plus one removal, per an inspection-then-implementation pair:
+	
+	- `_execute_attack`'s self-scan (`_find_nearest_foreign_in_radius(..., ATTACK_DETECT_RADIUS)`) replaced with a read of `dot_data[dot]["pending_observe"]["enemy"]["dot"]`.
+	- **Mandatory liveness guard** (not optional): `target == null or not dot_data.has(target)` treated as no-target, falling through to the existing rally-banner-march branch. A stored node can go stale (target removed between the observe tick and the attack tick) in a way the old self-scan never could.
+	- **Clear-on-consume: Option A** — attack never writes to `pending_observe`. The enemy slot is refreshed only by the dot's next `observe` roll (closest to the old self-scan's persistent-pursuit feel; staleness bounded only by observe frequency — the trade-off was surfaced, Option A chosen over B/C which broke mid-pursuit without added branching).
+	- `ATTACK_DETECT_RADIUS` removed — re-confirmed zero remaining references at implementation time (not just trusting the earlier inspection's grep).
+	- Everything downstream (rally fallback, `combat_locked` guard, adjacency test, `_initiate_combat`, `_march_toward`) is source-agnostic and untouched.
+	
+	### Shipped: observation-age telemetry diagnostic
+	
+	Additive instrumentation, planned separately (persistent per-dot state shape change, so it got its own inspection pass rather than riding the TRIVIAL lane):
+	
+	- `_execute_observe`'s enemy-slot write now stamps `"observed_tick": _tick_num` alongside the existing `"pos"`/`"dot"` keys.
+	- `_initiate_combat`'s `combat_init` telemetry record gains `"observe_age"` — `_tick_num - observed_tick`, read from the **attacker's** `pending_observe["enemy"]` (confirmed via the actual call path: `_initiate_combat`'s first param is the observing dot). Defensive `-1` sentinel if the stamp is somehow missing (unreachable via the current single guarded caller, but `_initiate_combat` is a standalone function — guarded for a hypothetical future second caller).
+	- Speck/ally/banner entries deliberately left unstamped — enemy only, per scope.
+	
+	### Verified live (191-tick run, `run_id 1783434358`)
+	
+	- 226 `combat_init` events, **100% carried `observe_age`**, zero `-1` sentinels, zero negatives.
+	- Distribution: min 1, max 15, mean 3.64 ticks stale. ~64% of initiations (144/226) fired on an observation 1–3 ticks old. `observe_age` never hit 0 in this run — expected, since each dot rolls exactly one primitive per tick, so a dot can't observe and attack in the same tick.
+	- Informal cadence check against the old baseline run (`run_id 1783011133`, self-scan code): 226 vs. 142 `combat_init` events, reveal at tick 83 vs. 66. Combat did not visibly get starved by the reduced detection radius (fixed 10 → weight-scaled 3+20·observe_weight, ≈5 cells at the current `observe=0.10` preset) — but this is one run against one run, different RNG, not a controlled comparison, and shouldn't be read as settling the still-open combat-balance question (block-defender-beats-attacker asymmetry, flagged 2026-06-24, not yet resolved either way).
+	
+	### Commit / push
+	
+	Two focused commits, pushed together (Dustan's explicit "commit and push" this session):
+	- `f23526b` — `chore: ignore code_report.md scratch file` (the new report-delivery convention's `.gitignore` rule, carried over from earlier in the session).
+	- `77946a8` — `feat: observe-gated combat detection + observation-age diagnostic` (both `main.gd` changes, designed/reviewed/verified together this session, treated as one commit since the diagnostic only makes sense instrumenting the fix it rides on).
+	
+	Push: fast-forward `a6c3ec5..77946a8`. HEAD now `77946a8`, level with `origin/main`, tree clean.
+	
+	### Next
+	
+	Combat-walls pre-work resumes — colony 1 is already re-enabled (2026-06-24) and both F1/F2 fixes are landed; next is verifying F1 and F2 with live two-colony data now that combat detection has actually changed underneath them, before combat-walls mechanic design proceeds (E1 chant-buffed-blocks, E2 unfiltered-scan boundary reconciliation, both parked 2026-06-24). Still open, unchanged: the uniform-detection-radius inspection (equirectangular distortion deferred from F2), and the combat-balance question (does the block/attacker asymmetry replicate across runs — needs more data, no fix without it).
+	
+	
+	---
+	
+	## Session Notes — 2026-07-07 (cont.) — waller stage (a) shipped, preset tuning applied, verification run still pending
+	
+	### Context
+	
+	Continuation of the same session, after the combat-detection-fork closeout above. Moved on to the next item on the horizon: designing and starting the waller (combat-walls) mechanic. Session hit its cap before a live verification run could happen — that run is the immediate next step, not yet done.
+	
+	### Decision: waller reaction model — defend mirrors attack, no interrupt layer
+	
+	Considered two models for how a dot reacts to an observed enemy: a deterministic tick-N+1 interrupt (whichever of attack/defend has the higher raw CCE weight always wins, softmax skipped, per the literal 2026-05-13 spec text) vs. defend reading `pending_observe["enemy"]` on its own normal softmax roll, exactly mirroring what attack already does (probabilistic, proportional to CCE share, no interrupt layer, no A2 adjacency-triggers-combat redesign).
+	
+	Dustan's stated vision was the deciding input: a smooth specialization *ladder* (most colonies plain-attack; fewer get banners; fewer still get rare bonuses; wallering — needing both `defend` and `build` high simultaneously — is meant to be rare by construction, not by a hard behavioral cliff). The deterministic-interrupt model produces a cliff (two colonies with nearly-identical attack/defend weights would behave *oppositely*, every time, with no in-between). The softmax-roll model produces a gradient for free. **Chose the softmax-roll model.** This session's already-shipped attack change (commit `77946a8`) needed no rework as a result.
+	
+	### Combat-effectiveness redesign — described, explicitly parked
+	
+	Dustan described a separate, not-yet-scoped vision for combat *effectiveness* (as opposed to action *selection*, which is what P(r) governs): base combat stays a plain deterministic comparison (defend wins ties) for most colonies; a mirrored "defend banner" (~2-defenders-worth per attacker) as a tier-1 counterpart to the existing attack rally banner; a "roll twice, take the highest" bonus for heavily-attack-specialized colonies as a tier-2 payoff — this is the first time "probabilistic combat" (discussed-but-never-decided repeatedly since 2026-05-09) has an actual answer, via a bolt-on luck modifier rather than replacing the deterministic core; simultaneously build-and-defend-heavy colonies (waller precondition) being rare is already satisfied for free by Shape D's existing multiplicative gate; the powerful version of the attack rally banner and the full oriented wall-banner mechanic (blocking territorial ingress) are explicitly envisioned as the rarest, end-game tier. **None of this is scoped or touched.** It's a separate future design pass and does not block waller work — noted here so the vision isn't lost before that pass happens.
+	
+	### Inspection: waller dependency grounding + staged roadmap
+	
+	Full inspection report reviewed and approved (see `code_report.md` history, not preserved — key findings recorded here):
+	
+	- **Blocks are already full combat participants today, for free.** Both foreign-detection filters (`_find_nearest_foreign_in_radius`, `_get_foreign_dots_near`) filter on `colony != my_colony` only, never `is_block`. "Combat lands on the wall first" needs no new detection code once a wall block exists — the only real unknown is *geometric* (does the wall actually sit between attacker and shielded dots), which is a placement problem for later stages, not a detection gap.
+	- **Mesh/orientation capability already exists.** `_create_block` already computes a full local `Basis` frame (surface normal + two tangents) and already accepts an arbitrary `Vector3` mesh size. An oriented wall is the same frame math, sourced from threat bearing instead of a fixed reference vector — no new geometry infrastructure needed.
+	- **`wall` namespace confirmed genuinely free** — one comment reference only, post-N4-rename.
+	- **`combat_locked` is a model to mirror, not reuse** — it auto-clears on combat resolution; a waller lock must persist independent of any particular fight resolving, only clearing when the wall itself dies. Needs its own lock.
+	- **Staged roadmap** (dependency-ordered, each independently playtestable where noted): (a) defend reads `pending_observe.enemy` + Shape D roll, log-only — root, standalone. (b) wall banner data structure + drop — needs (a)'s success path pointed at it. (c) oriented half-thickness block + mesh — needs (a) for threat bearing, playtestable alone. (d) waller lock (blocks all rolls incl. observe, unlocks on wall death) — needs (c), not playtestable without it. (e) other wallers extend the wall line — needs (b)+(c). (f) block-attackability — **not real work**, collapses to a live-run verification per the finding above, unless a future targeting-priority decision adds scope.
+	- **Three open design questions surfaced, still unresolved**: wall banner radius/TTL/completion condition; wall-banner-vs-build-banner priority when both in range (no two banner types are ever compared today — this would be new); whether combat-tick-shortening (`intensity > 0.7` → 2 ticks) should apply to wall-mediated combat.
+	
+	### Shipped: stage (a) — defend + Shape D diagnostic (log-only, no movement change)
+	
+	`_execute_primitive`'s `"defend"` arm now checks `pending_observe["enemy"]` (identical guard pattern to the shipped attack change: null-check `pending_observe`, null-check the `enemy` entry, extract the node, liveness-guard via `dot_data.has`). If a live observation is pending: rolls Shape D = `(this dot's own defend CCE) × (colony-avg build CCE) × SHAPE_D_SCALE` (new placeholder constant, 2.0), logs a new `shape_d_roll` telemetry record (tick, colony, prob, success). **The existing colony-center march still runs unchanged in both branches — no movement behavior changed this stage.** Not yet committed.
+	
+	### Resolved: `build_upward` is not a distinct stat
+	
+	Traced and confirmed: `build_upward` was never a separate tracked value — no such key exists or ever existed in code. It was descriptive language for what the existing height-decayed build-stacking preference (inside `_execute_build`) already does: taller monuments become progressively less likely to keep stacking, an effect already parameterized entirely by the single `build` CCE weight (Dustan confirmed: added specifically to cap tower height and differentiate tall/narrow from wide/area monuments, not as a player-chantable stat of its own). Stage (a)'s use of `_compute_colony_avg_build_cce` (keyed on plain `"build"`) is correct as originally implemented — no revision needed.
+	
+	### Applied: preset tuning for Shape D verification (not a final balance decision)
+	
+	Both presets had `defend = 0.0`, making `shape_d_prob` structurally always 0 — no diagnostic data possible. Raised `defend` 0.0 → 0.10 in both `COLONY0_CCE` and `COLONY1_CCE`, each tagged with an explicit "verification tuning pass, not a final balance decision" comment. Confirmed via inspection: weights are raw softmax inputs (`exp(weight)`, no normalization/clamp, only a `>0.0` pool-membership gate) — raising defend proportionally suppresses every other pooled action ~16–17% relative in both colonies, including a small dip to `observe` itself (the self-interaction: observe is what feeds the very observations Shape D depends on). Small, judged acceptable for a diagnostic.
+	
+	Resulting math: **COLONY0** — defend 0.10 × avg_build ≈0.40 × 2.0 = **0.08** (non-degenerate, useful telemetry expected). **COLONY1** — avg_build = 0.0 (COLONY1's `build` weight is 0 for every dot), so `shape_d_prob` = **0.0 regardless of defend value** — structurally degenerate, not fixable without also raising COLONY1's `build`, which is out of scope for a tuning pass (a real balance decision). **Decided: accept COLONY0-only useful Shape D telemetry** for this verification; COLONY1 logging clean, correctly-computed zeros is still valid confirmation the zero-build case computes correctly rather than erroring. Not touching COLONY1's `build` right now. Not yet committed.
+	
+	### Still pending — next session starts here
+	
+	1. **Live verification run has not happened yet.** Run a two-colony session with the tuned presets in place; confirm `shape_d_roll` telemetry shows sane, non-degenerate probability/success values on COLONY0, and clean (correctly-zero, non-erroring) records on COLONY1.
+	2. Once verified, proceed to stage (b) (wall banner data structure + drop), per the staged roadmap above.
+	3. `main.gd` currently carries two uncommitted pieces: stage (a)'s diagnostic code and the preset tuning pass. Plan is to commit them together (the tuning only exists to exercise stage (a)'s new code — same reasoning used earlier this session for bundling the observe-gate fix with its own diagnostic) — flag if a split is wanted instead.
+	4. Combat-effectiveness/tiered-balance redesign (luck modifier, banner tiers, roll-twice-take-highest) remains fully parked — a separate future design pass, only scoped when explicitly picked up.
+	
