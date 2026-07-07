@@ -28,3 +28,6 @@ telemetry.jsonl
 
 # MCP server config
 .mcp.json
+
+# Inspection/plan reports (read directly by planning layer, not committed)
+code_report.md
