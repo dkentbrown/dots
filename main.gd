@@ -27,6 +27,13 @@ var combat_clusters = []  # [{"pairs": [{"attacker": dot, "defender": dot}], "ti
 var combat_locked = {}    # dot -> true, skips primitive roll while in combat
 var cluster_by_defender = {}  # defender dot -> cluster reference (O(1) lookup)
 
+# Waller (Shape D) — stage (a) diagnostic
+# Shape D success probability = (this dot's defend weight) * (colony avg build CCE) * SHAPE_D_SCALE.
+# The "colony avg build CCE" factor is the same value monument cap-sizing reads
+# (_compute_colony_avg_build_cce, action key "build"). PLACEHOLDER value — an initial guess only,
+# meant to be tuned from this stage's own "shape_d_roll" telemetry, NOT a final number.
+const SHAPE_D_SCALE = 2.0
+
 # Spatial grid
 const GRID_RES = 200
 const CELL_STEP = TAU / float(GRID_RES)  # one grid cell width in radians
@@ -205,7 +212,7 @@ const COLONY1_CCE = {
 		"mark_surface": 0.0,
 		"build": 0.0,
 		"gather": 0.0,
-		"defend": 0.0,
+		"defend": 0.10,  # verification tuning pass for Shape D diagnostic — not a final balance decision
 		"attack": 0.40,
 		"reproduce": 0.32,
 		"observe": 0.1
@@ -225,7 +232,7 @@ const COLONY0_CCE = {
 		"mark_surface": 0.0,
 		"build": 0.40,
 		"gather": 0.0,
-		"defend": 0.0,
+		"defend": 0.10,  # verification tuning pass for Shape D diagnostic — not a final balance decision
 		"attack": 0.0,
 		"reproduce": 0.40,
 		"observe": 0.1
@@ -571,6 +578,23 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 		"attack":
 			_execute_attack(dot, intensity)
 		"defend":
+			# Stage (a) waller diagnostic: on a normal defend roll with a live pending enemy
+			# observation, roll Shape D (defend × colony-avg build × SHAPE_D_SCALE). Log-only
+			# until wall-banner infra (stage b) exists — the colony-center march below is
+			# unchanged and still runs this tick regardless of the roll's success or failure.
+			# Guard mirrors _execute_attack's shipped pattern exactly (Option A: read-only).
+			var pending = dot_data[dot]["pending_observe"]
+			var enemy_entry = pending["enemy"] if pending != null else null
+			var target = enemy_entry["dot"] if enemy_entry != null else null
+			if target != null and not dot_data.has(target):
+				target = null
+			if target != null:
+				var d_colony = dot_data[dot]["colony"]
+				var defend_weight = dot_data[dot]["cce"]["action"].get("defend", 0.0)
+				var avg_build = _compute_colony_avg_build_cce(d_colony)
+				var shape_d_prob = defend_weight * avg_build * SHAPE_D_SCALE
+				var shape_d_success = randf() < shape_d_prob
+				_telemetry({ "type": "shape_d_roll", "tick": _tick_num, "colony": d_colony, "prob": shape_d_prob, "success": shape_d_success })
 			var dir = dot.position.normalized()
 			var toward = (_cached_colony_center - dir).normalized()
 			var new_dir = (dir + toward * DEFEND_STEP).normalized()
