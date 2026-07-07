@@ -33,9 +33,6 @@ const CELL_STEP = TAU / float(GRID_RES)  # one grid cell width in radians
 var spatial_grid = {}  # cell_key (Vector2i) -> array of dots
 var dot_cell = {}      # dot -> current cell_key, for incremental grid updates
 
-# Attack
-const ATTACK_DETECT_RADIUS = 10  # in grid cells
-
 # Rally banners (dropped on combat contact, friendly-only pull)
 const RALLY_RADIUS = 30  # cells; how far a banner pulls reinforcements
 const BANNER_TTL = 6     # ticks a banner persists after contact
@@ -589,7 +586,16 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 func _execute_attack(dot: Node3D, intensity: float):
 	var my_colony = dot_data[dot]["colony"]
 	var my_dir = dot.position.normalized()
-	var target = _find_nearest_foreign_in_radius(my_dir, my_colony, ATTACK_DETECT_RADIUS)
+	# Observe-gated detection: read the enemy slot written by _execute_observe on a prior
+	# tick instead of self-scanning. Option A clear-on-consume — attack never writes to
+	# pending_observe; the slot is only ever refreshed by the dot's next observe roll.
+	var pending = dot_data[dot]["pending_observe"]
+	var enemy_entry = pending["enemy"] if pending != null else null
+	var target = enemy_entry["dot"] if enemy_entry != null else null
+	# Liveness guard (mandatory): a stored node reference can be stale — the target may have
+	# been removed via _remove_dot since the observe roll. Treat a freed target as no target.
+	if target != null and not dot_data.has(target):
+		target = null
 	if target == null:
 		# No enemy in detect range \u2014 check for a friendly rally banner to march toward
 		_march_toward_rally_banner(dot, my_dir, my_colony)
@@ -618,7 +624,14 @@ func _initiate_combat(attacker: Node3D, defender: Node3D, intensity: float):
 	var contact_cell = _cell_key(defender.position.normalized())
 	_drop_rally_banner(contact_cell, dot_data[attacker]["colony"])
 	_drop_rally_banner(contact_cell, dot_data[defender]["colony"])
-	_telemetry({ "type": "combat_init", "tick": _tick_num, "attacker_colony": dot_data[attacker]["colony"], "defender_colony": dot_data[defender]["colony"], "cell": [contact_cell.x, contact_cell.y], "intensity": intensity })
+	# Observation-age diagnostic: how stale was the attacker's enemy observation when combat
+	# fired? Defensive read — sentinel -1 for "unknown" if the stamp is missing (impossible via
+	# the current guarded call path, but _initiate_combat is standalone).
+	var observe_age = -1
+	var attacker_pending = dot_data[attacker]["pending_observe"]
+	if attacker_pending != null and attacker_pending["enemy"] != null and attacker_pending["enemy"].has("observed_tick"):
+		observe_age = _tick_num - attacker_pending["enemy"]["observed_tick"]
+	_telemetry({ "type": "combat_init", "tick": _tick_num, "attacker_colony": dot_data[attacker]["colony"], "defender_colony": dot_data[defender]["colony"], "cell": [contact_cell.x, contact_cell.y], "intensity": intensity, "observe_age": observe_age })
 
 func _march_toward(dot: Node3D, my_dir: Vector3, target: Node3D, my_colony: int):
 	var target_dir = target.position.normalized()
@@ -686,7 +699,7 @@ func _execute_observe(dot: Node3D) -> void:
 	var enemy_entry = null
 	var enemy = _find_nearest_foreign_in_radius(my_dir, my_colony, radius)
 	if enemy != null:
-		enemy_entry = { "pos": enemy.position.normalized(), "dot": enemy }
+		enemy_entry = { "pos": enemy.position.normalized(), "dot": enemy, "observed_tick": _tick_num }
 
 	# Speck: nearest speck within radius (linear scan — specks aren't grid-indexed)
 	var speck_entry = null
