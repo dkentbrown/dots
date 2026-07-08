@@ -1678,3 +1678,40 @@ Pre-existing uncommitted `DEVNOTES.md` delta (the prior git/workflow-fix + gathe
 	3. `main.gd` currently carries two uncommitted pieces: stage (a)'s diagnostic code and the preset tuning pass. Plan is to commit them together (the tuning only exists to exercise stage (a)'s new code — same reasoning used earlier this session for bundling the observe-gate fix with its own diagnostic) — flag if a split is wanted instead.
 	4. Combat-effectiveness/tiered-balance redesign (luck modifier, banner tiers, roll-twice-take-highest) remains fully parked — a separate future design pass, only scoped when explicitly picked up.
 	
+	
+	---
+	
+	## Session Notes — 2026-07-07 (cont. 2) — waller stage (a) verified live, stage (b) shipped, block-immunity finding discovered
+	
+	### Context
+	
+	Continuation of the same session. Stage (a) (defend + Shape D diagnostic) got its live verification run; stage (b) (wall banner data structure) was designed, implemented, and also verified live. A separate, unrelated finding surfaced during the stage (b) verification run and is recorded here flagged, not resolved.
+	
+	### Verified live: stage (a) + preset tuning (191→177-tick runs, run_id 1783462314)
+	
+	`shape_d_roll` behaved exactly as designed: COLONY0 held a constant computed probability of 0.08 across 4,652 rolls (matches the predicted math, `0.10 defend × 0.40 avg_build × 2.0 scale`, exactly), with 363 empirical successes — a 7.80% empirical rate against an 8.00% theoretical rate, essentially a perfect match and strong confirmation the `randf() < prob` roll itself works, not just that the formula computes correctly. COLONY1 held a constant 0.0 (its `build` weight is 0, so `avg_build` is 0) across 2,748 rolls with zero successes and zero errors — the degenerate case computes cleanly. `observe_age` continued to show a healthy distribution (min 1 / max 9 / mean 2.21), no regressions. This closes out stage (a) verification.
+	
+	### Shipped: stage (b) — wall banner data structure, dropped on Shape D success
+	
+	Per the staged waller roadmap. Modeled on the rally banner's minimal shape (event-side-effect drop; no `id`/cap/count — the build banner's heavier structure wasn't justified since this stage has no block or cap to track yet). New `wall_banners` list (`{cell, colony, ticks_remaining}`), `WALL_BANNER_RADIUS` (15, explicitly inert until stage (e) consumes it) and `WALL_BANNER_TTL` (6, matching both existing banner types), `_drop_wall_banner` and `_tick_wall_banners` mirroring the rally banner's functions exactly (dedup/refresh by cell+colony, else append; decrement-and-expire on tick). Wired additively into stage (a)'s already-computed `shape_d_success` boolean — the existing `shape_d_roll` telemetry line is untouched, a `wall_banner_dropped` event fires alongside it (on both the refresh and fresh-append paths) whenever a success lands a live banner. Nothing consumes `wall_banners` yet — stages (c)/(d)/(e) still ahead.
+	
+	### Verified live: stage (b) (run_id 1783462314, same run as above)
+	
+	264 `wall_banner_dropped` events, exactly matching COLONY0's 264 `shape_d_roll` successes out of 3,113 rolls (8.48% empirical this run, still consistent with the 8% theoretical). Zero from COLONY1, as expected. Stage (b) confirmed working exactly as designed.
+	
+	### Finding (flagged, not resolved): block-defenders show a fixed d_power regardless of stack height, and winning a fight doesn't reliably destroy the block
+	
+	Dustan observed in play: monument blocks one layer tall got cleared by attackers; two-or-more-layer blocks appeared immune. Hypothesis offered was that stacked defense value might exceed attacker power. Checked directly against this run's `combat_resolve` telemetry (204 block-defender fights): **`d_power` was exactly 0.5 in all 204 fights, with zero variation** — stacking-adds-defense is refuted directly, `WALL_DEFEND_VALUE` really is fixed regardless of height. `a_power` was also exactly 0.5 in all 204 (a dead-even tie every time), and the attacking colony won all 204 — consistent with ties going to the attacker.
+	
+	But grouping those 204 fights by cell surfaced the real phenomenon: only **44 distinct cells** account for all of them, and while most were fought 1–3 times (consistent with quick one-block clears), several were fought far more — one cell was fought **12 separate times across a 30-tick span** (ticks 152–181), with the attacker winning every single logged fight there and combat still recurring at the end of the run. **Winning a `combat_resolve` against a block does not appear to reliably destroy it** — likely because a multi-block stack needs its layers cleared individually and something in that bookkeeping isn't behaving as expected, though the actual mechanism (per-layer health tracking? re-selection of the same top block without state change? something else?) has not been traced in code — this is telemetry-grounded pattern-spotting, not a code-level diagnosis. Explicitly not investigated further this session; needs its own inspection. Unrelated to the waller roadmap in progress, but worth fixing given it directly affects how "a wall dies" will need to work once stage (d)'s waller lock depends on wall-death as its unlock condition.
+	
+	### Not committed yet
+	
+	`main.gd` carries stage (b)'s 31-line additive diff, uncommitted as of this note. Plan is a single commit (mirrors stage (a)'s bundling reasoning — this is one coherent, already-verified piece of work).
+	
+	### Next
+	
+	1. Commit + push stage (b).
+	2. Block-immunity finding needs its own inspection (separate from the waller roadmap) before combat-walls can safely depend on "wall death" as a concept in stage (d) — worth resolving before, not after, the waller lock is built on top of it.
+	3. Otherwise, waller roadmap continues at stage (c) (oriented half-thickness block + mesh) once picked up.
+	
