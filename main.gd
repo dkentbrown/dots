@@ -45,6 +45,11 @@ const RALLY_RADIUS = 30  # cells; how far a banner pulls reinforcements
 const BANNER_TTL = 6     # ticks a banner persists after contact
 var rally_banners = []  # [{cell: Vector2i, colony: int, ticks_remaining: int}]
 
+# Wall banners (stage (b): dropped on Shape D success; modeled on rally banner's minimal shape)
+const WALL_BANNER_RADIUS = 15  # stage (b) placeholder, inert until a later stage (e) consumes it
+const WALL_BANNER_TTL = 6      # ticks a wall banner persists; stage (b) uses pure-TTL expiry
+var wall_banners = []  # [{cell: Vector2i, colony: int, ticks_remaining: int}]
+
 # Per-colony population cap (testing aid)
 const MAX_POPULATION_PER_COLONY = 1000
 var colony_counts = {}  # colony_id -> current dot count
@@ -333,6 +338,7 @@ func _process(delta):
 		_check_fog_of_war()
 		_tick_rally_banners()
 		_tick_build_banners()
+		_tick_wall_banners()
 		_tick_combat_clusters()
 		_tick_specks()
 		_tick_all_dots()
@@ -595,6 +601,11 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 				var shape_d_prob = defend_weight * avg_build * SHAPE_D_SCALE
 				var shape_d_success = randf() < shape_d_prob
 				_telemetry({ "type": "shape_d_roll", "tick": _tick_num, "colony": d_colony, "prob": shape_d_prob, "success": shape_d_success })
+				if shape_d_success:
+					# Stage (b): a Shape D success drops (or refreshes) a wall banner at the
+					# defender's current cell. Nothing consumes wall_banners yet (stages c/d/e).
+					var my_cell = _cell_key(dot.position.normalized())
+					_drop_wall_banner(my_cell, d_colony)
 			var dir = dot.position.normalized()
 			var toward = (_cached_colony_center - dir).normalized()
 			var new_dir = (dir + toward * DEFEND_STEP).normalized()
@@ -937,6 +948,26 @@ func _tick_rally_banners():
 		rally_banners[i]["ticks_remaining"] -= 1
 		if rally_banners[i]["ticks_remaining"] <= 0:
 			rally_banners.remove_at(i)
+		i -= 1
+
+# --- Wall banners (stage (b): dropped on Shape D success; nothing consumes them yet) ---
+
+func _drop_wall_banner(cell: Vector2i, colony: int):
+	# Refresh TTL if a wall banner already exists at this cell for this colony
+	for banner in wall_banners:
+		if banner["colony"] == colony and banner["cell"] == cell:
+			banner["ticks_remaining"] = WALL_BANNER_TTL
+			_telemetry({ "type": "wall_banner_dropped", "tick": _tick_num, "colony": colony, "cell": [cell.x, cell.y] })
+			return
+	wall_banners.append({"cell": cell, "colony": colony, "ticks_remaining": WALL_BANNER_TTL})
+	_telemetry({ "type": "wall_banner_dropped", "tick": _tick_num, "colony": colony, "cell": [cell.x, cell.y] })
+
+func _tick_wall_banners():
+	var i = wall_banners.size() - 1
+	while i >= 0:
+		wall_banners[i]["ticks_remaining"] -= 1
+		if wall_banners[i]["ticks_remaining"] <= 0:
+			wall_banners.remove_at(i)
 		i -= 1
 
 func _cell_to_dir(cell: Vector2i) -> Vector3:
