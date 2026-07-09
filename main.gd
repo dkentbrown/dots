@@ -25,6 +25,12 @@ const COMBAT_TICKS = 3
 const COMBAT_INTENSITY_THRESHOLD = 0.7  # above this intensity, combat resolves one tick faster
 var combat_clusters = []  # [{"pairs": [{"attacker": dot, "defender": dot}], "ticks_remaining": int}]
 var combat_locked = {}    # dot -> true, skips primitive roll while in combat
+# Per-exact-cell combat lock, COUNT-based (not boolean): cell (Vector2i) -> int of live
+# block-defender fights targeting that cell. Two fights can hit one stack cell in one tick,
+# so a boolean released on the first resolve would reopen the build race while the second is
+# still live. Incremented once per new block-defender cluster (_initiate_combat), decremented
+# once per cluster teardown (_release_cell_lock). Builds skip a cell while its count > 0.
+var combat_locked_cells = {}  # Vector2i -> int
 var cluster_by_defender = {}  # defender dot -> cluster reference (O(1) lookup)
 
 # Waller (Shape D) — stage (a) diagnostic
@@ -655,6 +661,14 @@ func _initiate_combat(attacker: Node3D, defender: Node3D, intensity: float):
 		var cluster = {"pairs": [{"attacker": attacker, "defender": defender}], "ticks_remaining": ticks}
 		combat_clusters.append(cluster)
 		cluster_by_defender[defender] = cluster
+		# Count-based per-cell lock: a NEW block-defender fight locks the defender's exact cell.
+		# Stored on the cluster so teardown (either path) decrements exactly once. Appended pairs
+		# (same defender, more attackers) reuse this cluster and do NOT re-increment.
+		if dot_data[defender].get("is_block", false):
+			var locked_cell = dot_cell.get(defender)
+			if locked_cell != null:
+				cluster["locked_cell"] = locked_cell
+				combat_locked_cells[locked_cell] = combat_locked_cells.get(locked_cell, 0) + 1
 	# Drop rally banners for both sides at the contact cell
 	var contact_cell = _cell_key(defender.position.normalized())
 	_drop_rally_banner(contact_cell, dot_data[attacker]["colony"])
@@ -702,6 +716,10 @@ func _execute_build(dot: Node3D):
 			var stack_pref = BUILD_AT_BANNER_STACK_PREF * height_factor
 			var build_cell = banner_cell if randf() < stack_pref else my_cell
 			var reason_str = "stack" if build_cell == banner_cell else "lateral"
+			# Stack combat-lock: don't add a block to a cell with a live block-defender fight.
+			# Skip this build tick (no-op) rather than racing the topmost-removal on that cell.
+			if combat_locked_cells.get(build_cell, 0) > 0:
+				return
 			_create_block(build_cell, my_colony, dot_data[dot]["dot_id"], reason_str)
 			nearest_banner["block_count"] += 1
 			if nearest_banner["block_count"] >= nearest_banner["block_cap"]:
@@ -717,6 +735,9 @@ func _execute_build(dot: Node3D):
 		return
 	# No eligible banner in range \u2014 rare chance to start a new monument
 	if randf() >= BUILD_START_CHANCE:
+		return
+	# Stack combat-lock: don't found a monument on a cell with a live block-defender fight.
+	if combat_locked_cells.get(my_cell, 0) > 0:
 		return
 	_create_block(my_cell, my_colony, dot_data[dot]["dot_id"], "founder")
 	_drop_build_banner(my_cell, my_colony)
@@ -1008,6 +1029,20 @@ func _march_toward_rally_banner(dot: Node3D, my_dir: Vector3, my_colony: int):
 
 # --- Combat ---
 
+func _release_cell_lock(cluster) -> void:
+	# Decrement the per-cell combat lock this cluster holds, once. Idempotent: the "locked_cell"
+	# marker is erased after release, so a second call on the same cluster is a no-op (prevents
+	# double-decrement). Count going to <= 0 clears the entry, so it can never go negative.
+	if not cluster.has("locked_cell"):
+		return
+	var lc = cluster["locked_cell"]
+	var n = combat_locked_cells.get(lc, 0) - 1
+	if n <= 0:
+		combat_locked_cells.erase(lc)
+	else:
+		combat_locked_cells[lc] = n
+	cluster.erase("locked_cell")
+
 func _tick_combat_clusters():
 	var to_remove_clusters = []
 	var to_delete = {}
@@ -1017,13 +1052,17 @@ func _tick_combat_clusters():
 		if cluster["ticks_remaining"] <= 0:
 			# Track which defenders already have a winning attacker claiming their cell
 			var cell_claimed_by = {}
+			# One removed layer per block-defender fight: once this defender loses a layer this
+			# resolution, later pairs for the same defender don't remove a second (mirrors the
+			# original guard, where the single deleted defender skipped later same-defender pairs).
+			var block_defeated = {}
 			for pair in cluster["pairs"]:
 				var attacker = pair["attacker"]
 				var defender = pair["defender"]
 				# dot_data.has() is sufficient \u2014 _remove_dot erases it before queue_free
 				if not dot_data.has(attacker) or not dot_data.has(defender):
 					continue
-				if to_delete.has(attacker) or to_delete.has(defender):
+				if to_delete.has(attacker) or to_delete.has(defender) or block_defeated.has(defender):
 					continue
 				var a_power = dot_data[attacker]["cce"]["action"].get("attack", 0.0) + dot_data[attacker]["cce"]["action"].get("defend", 0.0)
 				var d_power = dot_data[defender]["cce"]["action"].get("attack", 0.0) + dot_data[defender]["cce"]["action"].get("defend", 0.0)
@@ -1041,20 +1080,43 @@ func _tick_combat_clusters():
 					"cell": [_resolve_cell.x, _resolve_cell.y]
 				})
 				if a_power >= d_power:
-					to_delete[defender] = true
 					if defender_is_block:
-						# Attacker advances only if the cell will be empty after this block is removed
+						# Topmost-removal: the fight targets the bottom block (oldest; the tie-break in
+						# _find_nearest_foreign_in_radius keeps the first array occupant), but a won
+						# defeat removes the TOPMOST live same-colony block of the stack — highest
+						# stack_index, not already queued. For a single-block stack the only node IS the
+						# defender, so victim == defender and the outcome is byte-identical to before.
+						block_defeated[defender] = true
 						var block_cell = dot_cell.get(defender)
+						var victim = defender
+						if block_cell != null and spatial_grid.has(block_cell):
+							var best_idx = -1
+							for occupant in spatial_grid[block_cell]:
+								if not dot_data.has(occupant):
+									continue
+								if not dot_data[occupant].get("is_block", false):
+									continue
+								if dot_data[occupant]["colony"] != dot_data[defender]["colony"]:
+									continue
+								if to_delete.has(occupant):
+									continue
+								var idx = dot_data[occupant].get("stack_index", 0)
+								if idx > best_idx:
+									best_idx = idx
+									victim = occupant
+						to_delete[victim] = true
+						# Attacker advances only if the cell will be empty after this block is removed
 						var cell_will_be_empty = true
 						if block_cell != null and spatial_grid.has(block_cell):
 							for occupant in spatial_grid[block_cell]:
-								if occupant != defender and not to_delete.has(occupant):
+								if occupant != victim and not to_delete.has(occupant):
 									cell_will_be_empty = false
 									break
 						if cell_will_be_empty and not cell_claimed_by.has(defender):
 							cell_claimed_by[defender] = attacker
 							to_advance.append({"winner": attacker, "target_dir": defender.position.normalized()})
 					else:
+						to_delete[defender] = true
 						# First winning attacker against this defender claims the cell
 						if not cell_claimed_by.has(defender):
 							cell_claimed_by[defender] = attacker
@@ -1067,6 +1129,7 @@ func _tick_combat_clusters():
 				cluster_by_defender.erase(pair["defender"])
 			to_remove_clusters.append(cluster)
 	for cluster in to_remove_clusters:
+		_release_cell_lock(cluster)
 		combat_clusters.erase(cluster)
 	for dot in to_delete:
 		_remove_dot(dot)
@@ -1112,6 +1175,7 @@ func _remove_dot(dot: Node3D):
 						cluster_by_defender.erase(pair["defender"])
 				to_remove_clusters.append(cluster)
 	for cluster in to_remove_clusters:
+		_release_cell_lock(cluster)
 		combat_clusters.erase(cluster)
 	dots.erase(dot)
 	var removed_colony = dot_data[dot]["colony"]
