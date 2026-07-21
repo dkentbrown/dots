@@ -73,7 +73,10 @@ const BUILD_BANNER_RADIUS = 15
 const BUILD_BANNER_TTL = 6
 const BUILD_START_CHANCE = 0.05  # chance a build roll starts a new monument when no banner is in range
 const BUILD_AT_BANNER_STACK_PREF = 0.8  # base prob. of stacking when building at a banner (at height 0)
-const STACK_HEIGHT_SOFTCAP = 10  # stack pref scales linearly to ~0 at this height
+const STACK_HEIGHT_SOFTCAP = 10  # height at which the stack/self factor bottoms out (strongly discouraged, not zero)
+const STACK_HEIGHT_FACTOR_FLOOR = 0.05  # floor under the height factor, so building past the softcap is rare not impossible
+const SHED_CONTAINMENT_DIST_SQ = 5  # sq torus-cell dist from the banner a shed target must stay within (rounded, tighter than the 8 footprint)
+const SHED_ESCAPE_CHANCE = 0.15  # per-shed chance to skip containment and draw from the full 8-ring, fraying the monument edge
 const BUILD_FOOTPRINT_DIST_SQ = 8  # squared torus-cell dist within which a builder counts as at/adjacent to a banner
 # Monument size cap. cap = BUILD_MONUMENT_BASE + BUILD_MONUMENT_SCALE * colony_avg_build_cce.
 # Snapshotted at founder placement and stored on the banner. Independent of population \u2014
@@ -710,12 +713,49 @@ func _execute_build(dot: Node3D):
 	if nearest_banner != null:
 		var banner_cell = nearest_banner["cell"]
 		if _is_at_or_adjacent(my_cell, banner_cell):
-			# At the monument \u2014 stack pref decays with current tower height; near-zero by STACK_HEIGHT_SOFTCAP
+			# At the monument \u2014 stack pref decays with current tower height, floored at STACK_HEIGHT_FACTOR_FLOOR by STACK_HEIGHT_SOFTCAP
 			var current_height = _count_blocks_in_cell(banner_cell, my_colony)
-			var height_factor = clamp(1.0 - float(current_height) / float(STACK_HEIGHT_SOFTCAP), 0.0, 1.0)
+			var height_factor = clamp(1.0 - float(current_height) / float(STACK_HEIGHT_SOFTCAP), STACK_HEIGHT_FACTOR_FLOOR, 1.0)
 			var stack_pref = BUILD_AT_BANNER_STACK_PREF * height_factor
-			var build_cell = banner_cell if randf() < stack_pref else my_cell
-			var reason_str = "stack" if build_cell == banner_cell else "lateral"
+			var stacking = randf() < stack_pref
+			# Every build path gates on the height of the cell that RECEIVES the block. On a
+			# stack the block lands on banner_cell (gated by the height roll above). An on-cell
+			# builder (my_cell == banner_cell) must NOT collapse back onto banner_cell on a
+			# non-stack roll -- that decorative roll was the unbounded-tower bug. Shed it to a
+			# weighted-lowest ring neighbour so tall centres dome outward and each receiving
+			# ring cell is height-discouraged by its own stack count. An off-cell builder
+			# (my_cell != banner_cell) gates on my_cell's OWN same-colony height (same floored
+			# factor as the banner's); on a failed roll it sheds to a weighted-lowest neighbour
+			# of my_cell, contained near the banner or, with SHED_ESCAPE_CHANCE, escaping that
+			# containment to fray the edge. There is no ungated self fallback: the shed target
+			# is height-weighted in every case, and an empty contained ring skips the build.
+			var build_cell
+			var reason_str
+			if stacking:
+				build_cell = banner_cell
+				reason_str = "stack"
+			elif my_cell == banner_cell:
+				build_cell = _pick_lateral_cell(banner_cell, my_colony)
+				reason_str = "lateral"
+			else:
+				var my_height = _count_blocks_in_cell(my_cell, my_colony)
+				var my_height_factor = clamp(1.0 - float(my_height) / float(STACK_HEIGHT_SOFTCAP), STACK_HEIGHT_FACTOR_FLOOR, 1.0)
+				if randf() < my_height_factor:
+					build_cell = my_cell
+					reason_str = "self"
+				else:
+					# Shed to a weighted-lowest neighbour. Normally constrained to SHED_CONTAINMENT_DIST_SQ
+					# of the banner (rounded base); with SHED_ESCAPE_CHANCE we drop that constraint and draw
+					# from the full 8-ring, letting a block land past the participation radius to fray the
+					# edge. The candidate set is pre-filtered, so the picked cell's height is always consulted
+					# (weight = 1/(1+height)); there is no ungated my_cell fallback. If containment leaves no
+					# candidate (degenerate geometry only), skip the build rather than place ungated.
+					var contained = randf() >= SHED_ESCAPE_CHANCE
+					var shed_cell = _pick_lateral_cell(my_cell, my_colony, banner_cell, contained)
+					if shed_cell.x < 0:
+						return
+					build_cell = shed_cell
+					reason_str = "shed"
 			# Stack combat-lock: don't add a block to a cell with a live block-defender fight.
 			# Skip this build tick (no-op) rather than racing the topmost-removal on that cell.
 			if combat_locked_cells.get(build_cell, 0) > 0:
@@ -738,6 +778,11 @@ func _execute_build(dot: Node3D):
 		return
 	# Stack combat-lock: don't found a monument on a cell with a live block-defender fight.
 	if combat_locked_cells.get(my_cell, 0) > 0:
+		return
+	# Don't re-found on a cell already at/above the softcap height. A completed monument
+	# re-founded with a fresh block budget is the remaining route to an unbounded cell;
+	# guard it with the same receiving-cell height notion used by the stack gate.
+	if _count_blocks_in_cell(my_cell, my_colony) >= STACK_HEIGHT_SOFTCAP:
 		return
 	_create_block(my_cell, my_colony, dot_data[dot]["dot_id"], "founder")
 	_drop_build_banner(my_cell, my_colony)
@@ -827,25 +872,43 @@ func _find_eligible_build_banner(dot: Node3D, my_cell: Vector2i, my_colony: int)
 			best = banner
 	return best
 
-# Intentionally retained dead code (no caller; see DEVNOTES 2026-05-12). Also the only
-# place in this file that wraps grid neighbors correctly with (+ GRID_RES) before the
-# modulo, so it doubles as the reference seam-wrap idiom.
-func _pick_lateral_cell(banner_cell: Vector2i, colony: int) -> Vector2i:
-	# Returns a neighbor of banner_cell preferring empty (no same-colony block) cells.
-	# Falls back to a random neighbor if all 8 contain same-colony blocks.
-	var empty = []
-	var all_neighbors = []
+# Now live: the height-gated lateral redirect for tall monuments calls this (was retained
+# dead code, DEVNOTES 2026-05-12). Still the only place in this file that wraps grid
+# neighbors correctly with (+ GRID_RES) before the modulo -- keep that seam-wrap idiom.
+func _pick_lateral_cell(center_cell: Vector2i, colony: int, banner_cell: Vector2i = Vector2i(-1, -1), contained: bool = false) -> Vector2i:
+	# Returns one of center_cell's 8 ring neighbours, weighted toward LOWER same-colony
+	# stacks so the footprint domes up together. Weight = 1 / (1 + height): a bare cell
+	# (height 0) weighs 1.0 and taller cells weigh progressively less but never zero, so a
+	# taller cell is occasionally still chosen and the tops stay organic rather than a
+	# perfectly smooth dome. Scope stays the 8-ring (footprint is not widened).
+	# When contained, candidates are pre-filtered to within SHED_CONTAINMENT_DIST_SQ of
+	# banner_cell before the weighted draw (never picked-then-rejected). The height-weighted
+	# draw is what gates the receiving cell, so every returned cell has had its height
+	# consulted. Returns Vector2i(-1, -1) if the filter leaves the ring empty; the caller
+	# must skip rather than place ungated. On-cell callers pass no banner_cell/contained and
+	# get the full unfiltered ring, unchanged.
+	var neighbors = []
+	var weights = []
+	var total = 0.0
 	for du in [-1, 0, 1]:
 		for dv in [-1, 0, 1]:
 			if du == 0 and dv == 0:
 				continue
-			var nb = Vector2i((banner_cell.x + du + GRID_RES) % GRID_RES, (banner_cell.y + dv + GRID_RES) % GRID_RES)
-			all_neighbors.append(nb)
-			if _count_blocks_in_cell(nb, colony) == 0:
-				empty.append(nb)
-	if not empty.is_empty():
-		return empty[randi() % empty.size()]
-	return all_neighbors[randi() % all_neighbors.size()]
+			var nb = Vector2i((center_cell.x + du + GRID_RES) % GRID_RES, (center_cell.y + dv + GRID_RES) % GRID_RES)
+			if contained and _torus_cell_dist_sq(nb, banner_cell) > SHED_CONTAINMENT_DIST_SQ:
+				continue
+			var w = 1.0 / (1.0 + float(_count_blocks_in_cell(nb, colony)))
+			neighbors.append(nb)
+			weights.append(w)
+			total += w
+	if neighbors.is_empty():
+		return Vector2i(-1, -1)  # containment left no candidate (degenerate geometry); caller skips
+	var r = randf() * total
+	for i in range(neighbors.size()):
+		r -= weights[i]
+		if r <= 0.0:
+			return neighbors[i]
+	return neighbors[neighbors.size() - 1]  # float-rounding fallback; ring is non-empty here
 
 func _count_blocks_in_cell(cell: Vector2i, colony: int) -> int:
 	var n = 0
