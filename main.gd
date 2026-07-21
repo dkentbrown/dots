@@ -51,10 +51,15 @@ const RALLY_RADIUS = 30  # cells; how far a banner pulls reinforcements
 const BANNER_TTL = 6     # ticks a banner persists after contact
 var rally_banners = []  # [{cell: Vector2i, colony: int, ticks_remaining: int}]
 
-# Wall banners (stage (b): dropped on Shape D success; modeled on rally banner's minimal shape)
-const WALL_BANNER_RADIUS = 15  # stage (b) placeholder, inert until a later stage (e) consumes it
-const WALL_BANNER_TTL = 6      # ticks a wall banner persists; stage (b) uses pure-TTL expiry
-var wall_banners = []  # [{cell: Vector2i, colony: int, ticks_remaining: int}]
+# Wall banners (stage (b): dropped on Shape D success; consumed by stages (d)/(e) below)
+const WALL_BANNER_RADIUS = 15  # cells; how far a wall banner pulls build-inclined dots to extend the fence
+const WALL_BANNER_TTL = 6      # ticks a wall banner persists; pure-TTL expiry
+const WALL_MAX_HALF_LENGTH = 4  # stage (e): max cells the fence extends on each side of the banner seed (line length <= 2*this + 1)
+var wall_banners = []  # [{cell: Vector2i, colony: int, ticks_remaining: int, threat_dir: Vector3}]
+# Stage (d) waller perch: waller_dot -> wall_block it is perched on. A perched dot skips all
+# rolls until its block dies (combat or decay), then drops back to the surface. The block
+# carries the inverse ref in dot_data as "perched_by".
+var wall_perch = {}
 
 # Per-colony population cap (testing aid)
 const MAX_POPULATION_PER_COLONY = 1000
@@ -65,6 +70,7 @@ const BLOCK_DEFEND_VALUE = 0.5
 const BLOCK_DECAY_TICKS = 300
 const BLOCK_MESH_SIZE = Vector3(0.031, 0.003, 0.031)  # match cell spacing so adjacent cells tile cleanly (TAU/GRID_RES \u2248 0.0314 at the equator)
 const BLOCK_HEIGHT_STEP = 0.003  # vertical spacing between stacked blocks (== mesh y-size)
+const WALL_MESH_SIZE = Vector3(0.031, 0.003, 0.0155)  # stage (c): half-thickness vs BLOCK_MESH_SIZE; long axis (x, perpendicular to threat) kept at full cell spacing to tile with future wall-line segments (stage e)
 var block_counts = {}  # colony_id -> current block count
 var soul_pool = {}   # colony_id -> accumulated soul units
 
@@ -476,6 +482,10 @@ func _tick_all_dots():
 	for dot in dots:
 		if combat_locked.has(dot):
 			continue
+		# Stage (d): a perched waller is frozen on its wall segment — no primitive rolls,
+		# not even observe — until the segment dies and _remove_dot releases it.
+		if wall_perch.has(dot):
+			continue
 		if dot_data[dot].get("is_block", false):
 			continue
 		var lock = dot_data[dot].get("collect_lock", null)
@@ -593,10 +603,10 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 		"attack":
 			_execute_attack(dot, intensity)
 		"defend":
-			# Stage (a) waller diagnostic: on a normal defend roll with a live pending enemy
-			# observation, roll Shape D (defend × colony-avg build × SHAPE_D_SCALE). Log-only
-			# until wall-banner infra (stage b) exists — the colony-center march below is
-			# unchanged and still runs this tick regardless of the roll's success or failure.
+			# On a normal defend roll with a live pending enemy observation, roll Shape D
+			# (defend × colony-avg build × SHAPE_D_SCALE). On success the dot founds a wall
+			# segment and perches (stages b–d) and returns early — skipping the colony-center
+			# march. On failure (or no pending enemy) the colony-center march below runs as before.
 			# Guard mirrors _execute_attack's shipped pattern exactly (Option A: read-only).
 			var pending = dot_data[dot]["pending_observe"]
 			var enemy_entry = pending["enemy"] if pending != null else null
@@ -611,10 +621,20 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 				var shape_d_success = randf() < shape_d_prob
 				_telemetry({ "type": "shape_d_roll", "tick": _tick_num, "colony": d_colony, "prob": shape_d_prob, "success": shape_d_success })
 				if shape_d_success:
-					# Stage (b): a Shape D success drops (or refreshes) a wall banner at the
-					# defender's current cell. Nothing consumes wall_banners yet (stages c/d/e).
+					# Stage (b): a Shape D success drops (or refreshes) a wall banner (now carrying
+					# the threat bearing) at the defender's current cell. Stage (c): builds an
+					# oriented half-thickness wall block, long axis perpendicular to the threat.
+					# Stage (d): the waller then perches on its own segment and locks. Stage (e)
+					# extenders respond to the banner via _execute_build.
 					var my_cell = _cell_key(dot.position.normalized())
-					_drop_wall_banner(my_cell, d_colony)
+					var threat_dir = target.position.normalized()
+					_drop_wall_banner(my_cell, d_colony, threat_dir)
+					# Only found a segment on a cell free of a prior same-colony block and not
+					# mid-fight; otherwise leave the banner for extenders and march normally.
+					if _count_blocks_in_cell(my_cell, d_colony) == 0 and combat_locked_cells.get(my_cell, 0) == 0:
+						var seed_block = _create_wall_block(my_cell, d_colony, threat_dir, dot_data[dot]["dot_id"])
+						_perch_waller(dot, seed_block)
+						return  # perched + locked this tick: skip the colony-center march below
 			var dir = dot.position.normalized()
 			var toward = (_cached_colony_center - dir).normalized()
 			var new_dir = (dir + toward * DEFEND_STEP).normalized()
@@ -708,6 +728,14 @@ func _execute_build(dot: Node3D):
 	var my_colony = dot_data[dot]["colony"]
 	var my_dir = dot.position.normalized()
 	var my_cell = _cell_key(my_dir)
+	# Wall-banner priority (stages d/e): an active same-colony wall banner in range overrides
+	# ordinary monument building entirely — an existential-threat response. A build-inclined
+	# dot marches to the fence line and extends it, then perches and locks. This is
+	# unconditional: while a wall banner is in range, no monument work happens on this roll.
+	var wall_banner = _find_nearest_wall_banner(my_cell, my_colony)
+	if wall_banner != null:
+		_respond_to_wall_banner(dot, my_dir, my_cell, my_colony, wall_banner)
+		return
 	# Look for an active, unused build banner within range
 	var nearest_banner = _find_eligible_build_banner(dot, my_cell, my_colony)
 	if nearest_banner != null:
@@ -969,6 +997,61 @@ func _create_block(cell: Vector2i, colony: int, builder_id: int = -1, reason: St
 	_update_dot_color(block)
 	return block
 
+# Stage (c): a lone waller's wall block. Separate from _create_block rather than a shared
+# parameterization — mesh size and orientation source both differ (threat bearing, not a
+# fixed reference), and this deliberately skips monument stacking (no stack_index scan). It
+# still uses BLOCK_DEFEND_VALUE / decay / is_block so it fights and decays like any other
+# block (per the "blocks are already full combat participants" inspection finding).
+func _create_wall_block(cell: Vector2i, colony: int, threat_dir: Vector3, builder_id: int = -1) -> Node3D:
+	if LOG_ENABLED and builder_id >= 0:
+		_log("[t%d] block: builder=%d cell=(%d,%d) reason=waller height=0" % [_tick_num, builder_id, cell.x, cell.y])
+	var block = MeshInstance3D.new()
+	var box = BoxMesh.new()
+	box.size = WALL_MESH_SIZE
+	block.mesh = box
+	var mat = StandardMaterial3D.new()
+	mat.albedo_color = Color.CYAN
+	mat.emission_enabled = true
+	mat.emission = Color.CYAN
+	mat.emission_energy_multiplier = 0.6
+	block.material_override = mat
+	block.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	add_child(block)
+	dots.append(block)
+	var dir = _cell_to_dir(cell)
+	dot_data[block] = {
+		"age": 0,
+		"cce": _deep_copy_cce(NEUTRAL_CCE),
+		"colony": colony,
+		"is_block": true,
+		"decay_ticks_remaining": BLOCK_DECAY_TICKS,
+		"stack_index": 0,
+	}
+	dot_data[block]["cce"]["action"]["defend"] = BLOCK_DEFEND_VALUE
+	known_colonies[colony] = true
+	block_counts[colony] = block_counts.get(colony, 0) + 1
+	block.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
+	# Same frame construction as _create_block, but the reference vector is the threat
+	# bearing instead of a fixed world axis. y.cross(v) is always already perpendicular to y
+	# regardless of v's own tilt, so threat_dir need not be pre-projected onto the tangent
+	# plane. Chosen orientation (per design decision): x = tangent PERPENDICULAR to the
+	# threat (the wall's long axis, forming a barrier across the enemy's path); z = tangent
+	# TOWARD/away the threat (the thin axis, the wall's thickness facing the enemy).
+	var new_basis = Basis()
+	new_basis.y = dir
+	var ref_dir = threat_dir
+	if abs(dir.dot(threat_dir.normalized())) > 0.999:
+		# Degenerate: enemy direction ~parallel to the surface normal here. Fall back to the
+		# same reference _create_block uses so the mesh still gets a valid orthonormal frame
+		# instead of a NaN basis from a near-zero cross product.
+		ref_dir = Vector3.FORWARD if abs(dir.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT
+	new_basis.x = new_basis.y.cross(ref_dir).normalized()
+	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
+	block.transform.basis = new_basis
+	_grid_insert(block, cell)
+	_update_dot_color(block)
+	return block
+
 # --- Build banners ---
 
 func _drop_build_banner(cell: Vector2i, colony: int) -> int:
@@ -1034,16 +1117,18 @@ func _tick_rally_banners():
 			rally_banners.remove_at(i)
 		i -= 1
 
-# --- Wall banners (stage (b): dropped on Shape D success; nothing consumes them yet) ---
+# --- Wall banners (stage (b) drop; stages (d)/(e) consumption below) ---
 
-func _drop_wall_banner(cell: Vector2i, colony: int):
-	# Refresh TTL if a wall banner already exists at this cell for this colony
+func _drop_wall_banner(cell: Vector2i, colony: int, threat_dir: Vector3):
+	# Refresh TTL (and the threat bearing, which may have shifted) if a wall banner already
+	# exists at this cell for this colony
 	for banner in wall_banners:
 		if banner["colony"] == colony and banner["cell"] == cell:
 			banner["ticks_remaining"] = WALL_BANNER_TTL
+			banner["threat_dir"] = threat_dir
 			_telemetry({ "type": "wall_banner_dropped", "tick": _tick_num, "colony": colony, "cell": [cell.x, cell.y] })
 			return
-	wall_banners.append({"cell": cell, "colony": colony, "ticks_remaining": WALL_BANNER_TTL})
+	wall_banners.append({"cell": cell, "colony": colony, "ticks_remaining": WALL_BANNER_TTL, "threat_dir": threat_dir})
 	_telemetry({ "type": "wall_banner_dropped", "tick": _tick_num, "colony": colony, "cell": [cell.x, cell.y] })
 
 func _tick_wall_banners():
@@ -1053,6 +1138,77 @@ func _tick_wall_banners():
 		if wall_banners[i]["ticks_remaining"] <= 0:
 			wall_banners.remove_at(i)
 		i -= 1
+
+func _find_nearest_wall_banner(my_cell: Vector2i, my_colony: int):
+	if wall_banners.is_empty():
+		return null
+	var best = null
+	var best_dist = WALL_BANNER_RADIUS * WALL_BANNER_RADIUS + 1
+	for banner in wall_banners:
+		if banner["colony"] != my_colony:
+			continue
+		if banner["ticks_remaining"] <= 0:
+			continue
+		var d = _torus_cell_dist_sq(my_cell, banner["cell"])
+		if d < best_dist:
+			best_dist = d
+			best = banner
+	return best
+
+# Stage (e): where the next fence segment goes. The fence runs along the tangent perpendicular
+# to the threat bearing (same axis the wall block's long side is oriented to). Walk outward from
+# the banner seed cell, alternating sides, and return the first empty, non-locked cell within
+# WALL_MAX_HALF_LENGTH. Returns (-1,-1) when the fence is full (all line cells occupied).
+func _wall_line_target_cell(banner, colony: int) -> Vector2i:
+	var seed_cell = banner["cell"]
+	var seed_dir = _cell_to_dir(seed_cell)
+	var threat_dir = banner.get("threat_dir", null)
+	var along: Vector3
+	if threat_dir == null or abs(seed_dir.dot(threat_dir.normalized())) > 0.999:
+		# Missing or degenerate (threat ~parallel to the surface normal): fall back to any
+		# stable tangent so the fence still has a well-defined direction.
+		along = seed_dir.cross(Vector3.FORWARD if abs(seed_dir.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT).normalized()
+	else:
+		along = seed_dir.cross(threat_dir.normalized()).normalized()
+	for k in range(0, WALL_MAX_HALF_LENGTH + 1):
+		var sides = [0] if k == 0 else [1, -1]
+		for s in sides:
+			var theta = CELL_STEP * k * s
+			# Exact great-circle step along the fence tangent (not a chord approximation).
+			var probe = (seed_dir * cos(theta) + along * sin(theta)).normalized()
+			var cell = _cell_key(probe)
+			if _count_blocks_in_cell(cell, colony) == 0 and combat_locked_cells.get(cell, 0) == 0:
+				return cell
+	return Vector2i(-1, -1)
+
+# Stage (e): a build-inclined dot's response to an in-range wall banner. March to the next open
+# fence cell; once standing on it, place an oriented segment there and perch (stage d). While a
+# wall banner is in range this fully replaces monument building — even a full fence just idles
+# the dot rather than letting it fall back to a monument.
+func _respond_to_wall_banner(dot: Node3D, my_dir: Vector3, my_cell: Vector2i, my_colony: int, banner) -> void:
+	var target_cell = _wall_line_target_cell(banner, my_colony)
+	if target_cell.x < 0:
+		return  # fence full (or degenerate) — idle, do NOT build a monument
+	if my_cell == target_cell:
+		if combat_locked_cells.get(target_cell, 0) > 0:
+			return  # don't add a segment to a cell with a live block-defender fight
+		var threat_dir = banner.get("threat_dir", my_dir)
+		var seg = _create_wall_block(target_cell, my_colony, threat_dir, dot_data[dot]["dot_id"])
+		_perch_waller(dot, seg)
+		_telemetry({ "type": "wall_extend", "tick": _tick_num, "colony": my_colony, "cell": [target_cell.x, target_cell.y] })
+	else:
+		_march_toward_dir(dot, my_dir, _cell_to_dir(target_cell), my_colony)
+
+# Stage (d): lock a dot on top of the wall segment it just built. Forward ref in wall_perch,
+# inverse ref on the block; both are torn down by _remove_dot when either node dies.
+func _perch_waller(dot: Node3D, block: Node3D) -> void:
+	wall_perch[dot] = block
+	dot_data[block]["perched_by"] = dot
+	# Sit the dot one block-height above its segment's centre so it reads as perched on top.
+	var perch_dir = block.position.normalized()
+	dot.position = perch_dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET + BLOCK_HEIGHT_STEP)
+	if dot_data.has(dot) and dot_cell.has(dot):
+		_grid_update_position(dot)
 
 func _cell_to_dir(cell: Vector2i) -> Vector3:
 	# Inverse of _cell_key: cell coord -> sphere direction
@@ -1207,6 +1363,20 @@ func _remove_dot(dot: Node3D):
 	# dot_data.has(dot) alone for liveness (grid lookups do this, no is_instance_valid).
 	if not dot_data.has(dot):
 		return
+	# Stage (d) perch teardown. A dying wall segment releases its perched builder back to the
+	# surface (this is the "wall dies -> waller unlocks" path, covering both combat removal and
+	# decay). A dying perched builder clears its segment's back-ref so no stale reference remains.
+	if dot_data[dot].get("is_block", false) and dot_data[dot].has("perched_by"):
+		var perched = dot_data[dot]["perched_by"]
+		if wall_perch.get(perched) == dot:
+			wall_perch.erase(perched)
+			if dot_data.has(perched):
+				_place_dot_on_sphere(perched, perched.position.normalized())
+	if wall_perch.has(dot):
+		var perched_block = wall_perch[dot]
+		wall_perch.erase(dot)
+		if dot_data.has(perched_block):
+			dot_data[perched_block].erase("perched_by")
 	# Incrementally remove from spatial grid
 	if dot_cell.has(dot):
 		var key = dot_cell[dot]
