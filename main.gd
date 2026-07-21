@@ -71,6 +71,7 @@ const BLOCK_DECAY_TICKS = 300
 const BLOCK_MESH_SIZE = Vector3(0.031, 0.003, 0.031)  # match cell spacing so adjacent cells tile cleanly (TAU/GRID_RES \u2248 0.0314 at the equator)
 const BLOCK_HEIGHT_STEP = 0.003  # vertical spacing between stacked blocks (== mesh y-size)
 const WALL_MESH_SIZE = Vector3(0.031, 0.003, 0.0155)  # stage (c): half-thickness vs BLOCK_MESH_SIZE; long axis (x, perpendicular to threat) kept at full cell spacing to tile with future wall-line segments (stage e)
+const WALL_COLOR = Color(0.0, 0.95, 0.8)  # bright teal — distinguishes fence segments from the pale defend-blue of monument blocks; not a CCE hue, so no semantic clash
 var block_counts = {}  # colony_id -> current block count
 var soul_pool = {}   # colony_id -> accumulated soul units
 
@@ -1010,9 +1011,10 @@ func _create_wall_block(cell: Vector2i, colony: int, threat_dir: Vector3, builde
 	box.size = WALL_MESH_SIZE
 	block.mesh = box
 	var mat = StandardMaterial3D.new()
-	mat.albedo_color = Color.CYAN
+	# Initial colour; _update_dot_color below is the authority (fog / is_wall branch).
+	mat.albedo_color = WALL_COLOR
 	mat.emission_enabled = true
-	mat.emission = Color.CYAN
+	mat.emission = WALL_COLOR
 	mat.emission_energy_multiplier = 0.6
 	block.material_override = mat
 	block.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
@@ -1024,6 +1026,7 @@ func _create_wall_block(cell: Vector2i, colony: int, threat_dir: Vector3, builde
 		"cce": _deep_copy_cce(NEUTRAL_CCE),
 		"colony": colony,
 		"is_block": true,
+		"is_wall": true,  # fence segment (vs monument block); drives the distinct colour in _update_dot_color
 		"decay_ticks_remaining": BLOCK_DECAY_TICKS,
 		"stack_index": 0,
 	}
@@ -1286,6 +1289,10 @@ func _tick_combat_clusters():
 				var a_power = dot_data[attacker]["cce"]["action"].get("attack", 0.0) + dot_data[attacker]["cce"]["action"].get("defend", 0.0)
 				var d_power = dot_data[defender]["cce"]["action"].get("attack", 0.0) + dot_data[defender]["cce"]["action"].get("defend", 0.0)
 				var defender_is_block = dot_data[defender].get("is_block", false)
+				# Distinguish a fence segment from a monument block so verification can tell
+				# "attackers hitting the wall" from ordinary monument combat without cross-
+				# referencing cells against wall_extend.
+				var defender_is_wall = dot_data[defender].get("is_wall", false)
 				# Capture colonies BEFORE any _remove_dot (deletions are deferred to to_delete below).
 				var _resolve_cell = _cell_key(defender.position.normalized())
 				_telemetry({
@@ -1296,6 +1303,7 @@ func _tick_combat_clusters():
 					"a_power": a_power,
 					"d_power": d_power,
 					"defender_was_block": defender_is_block,
+					"defender_was_wall": defender_is_wall,
 					"cell": [_resolve_cell.x, _resolve_cell.y]
 				})
 				if a_power >= d_power:
@@ -1435,6 +1443,12 @@ func _update_dot_color(dot: Node3D):
 	if not revealed_colonies.get(colony, false):
 		mat.albedo_color = FOG_COLOR
 		mat.emission = FOG_EMISSION
+		return
+	# Fence segments render a fixed distinct colour (after fog, so hidden colonies still fog),
+	# rather than the CCE mix — otherwise they'd be identical to defend-blue monument blocks.
+	if dot_data[dot].get("is_wall", false):
+		mat.albedo_color = WALL_COLOR
+		mat.emission = WALL_COLOR
 		return
 	var cce = dot_data[dot]["cce"]
 	var total = 0.0
