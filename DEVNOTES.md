@@ -1864,3 +1864,41 @@ Dustan: "you are now the planning and implementation layer." Reversed the prior 
 ### Git
 
 Committing three focused units this session (main.gd feature / DEVNOTES log / CLAUDE.md role line) and pushing, at Dustan's request. This is the first time Code commits DEVNOTES + CLAUDE.md itself under the expanded role.
+
+
+---
+
+## 2026-07-21 (cont. 2) — Waller stage (f) verified via telemetry; fence color + defender_was_wall tag; combat-walls arc CLOSED
+
+Stage (f) ("block-attackability — not real work, a live-run verification") is done, and the whole waller roadmap (a)–(f) is now complete and verified. Two small polish changes shipped alongside, then the arc was closed.
+
+### Shipped (main.gd polish)
+
+- **Fence color.** Monument and wall blocks were visually identical because both share the block CCE (`NEUTRAL` + `defend=0.5`) and `_update_dot_color` recomputes colour from the CCE mix — the `Color.CYAN` set in `_create_wall_block`'s constructor was always overridden. Fix: an explicit `is_wall` marker in the wall block's `dot_data`, a new `WALL_COLOR = Color(0.0, 0.95, 0.8)` (bright teal — not a CCE hue, so no semantic clash), and a branch in `_update_dot_color` that renders `is_wall` blocks in `WALL_COLOR`. Placed AFTER the fog-of-war check so hidden colonies still fog, and it survives colour refreshes (e.g. on reveal). Monument blocks untouched (pale defend-blue).
+- **`defender_was_wall` telemetry.** `combat_resolve` now tags whether the defender was a fence segment (reads the same `is_wall` marker), so "attackers hitting the wall" is separable from monument combat without cross-referencing cells against `wall_extend`.
+
+### Verified live (telemetry parse, run isolated from the last run_start; 206 ticks)
+
+Dustan ran the game; Code parsed `telemetry.jsonl`. Note the file is cumulative across runs (11 run_starts now) — always slice from the final `run_start`. Findings for the waller loop:
+
+- **Builds:** 312 `wall_banner_dropped` + 112 `wall_extend`, ALL colony 0 (the outnumbered side), none from the enemy — as designed.
+- **Intercepts:** first fence-combat at t135 (enemy arrival); **56 `combat_resolve` with `defender_was_wall: true`**, plus 36 vs monument blocks — **92 of 262 total combats (35%) spent on structures, not colony-0 dots.**
+- **Dies + regenerates:** all 56 fence fights won by the attacker (a_power ≥ d_power, ties-to-attacker; the fence is a speed-bump, not impenetrable), each firing the "wall dies → waller unlocks" path. The banner kept re-dropping (312×) and wallers kept rebuilding (112 extensions), so the line regenerates — a living defensive wall.
+- **Held up:** colony 0 was outnumbered the whole back half (enemy pinned at its 1000 cap from ~t143) yet never collapsed — grew straight through the assault (419 dots at t135 → 648 at t206) while the fence absorbed ~a third of enemy combat throughput.
+
+### Honest caveats (recorded, not blocking)
+
+- Not a controlled A/B: this proves the *mechanic* (build → intercept → die → release → regenerate), NOT that colony 0's survival was *caused* by the fence vs. its own reproduction. A fenced-vs-unfenced comparison run would be needed to quantify the survival delta — deferred, not required to call the mechanic done.
+- Perched-waller count is NOT directly visible in telemetry: snapshot `combat_locked` is the active-combat dict, not `wall_perch` (which isn't snapshotted). Perching was inferred from the build→die→rebuild cycle working. A one-line perch/unlock telemetry event would make it directly visible if ever wanted.
+
+### Waller roadmap — FINAL STATUS
+
+(a) defend+Shape D ✅ · (b) wall banner ✅ · (c) oriented segment ✅ · (d) perch+lock ✅ · (e) fence extension ✅ · (f) verification ✅. **Combat-walls arc closed.**
+
+### Git
+
+Bundling this polish as one `main.gd` commit + this DEVNOTES entry (its own commit), pushed at Dustan's request. Enemy colony spawn is live (`main.gd` `_ready`), so this all exercises in normal play.
+
+### Next (backlog, per the "where to" survey this session)
+
+Two genuinely large threads remain, both needing a design pass before code: (1) **North Star behavioral model** — 8 of 9 P(r) score terms (M/T/S_am/S_at/S_mt/C/E/H) are dormant zeroed stubs; lighting them up is the sim's core behavioral depth. (2) **Combat-effectiveness / tiered-balance** — defend banner + roll-twice-take-highest luck modifier, never scoped. Plus tech-debt (uniform detection radius / equirectangular distortion) and UX (gather verb unreachable — no chant alias). None urgent; combat-walls no longer blocks any of them.
