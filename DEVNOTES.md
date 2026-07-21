@@ -1715,3 +1715,152 @@ Pre-existing uncommitted `DEVNOTES.md` delta (the prior git/workflow-fix + gathe
 	2. Block-immunity finding needs its own inspection (separate from the waller roadmap) before combat-walls can safely depend on "wall death" as a concept in stage (d) — worth resolving before, not after, the waller lock is built on top of it.
 	3. Otherwise, waller roadmap continues at stage (c) (oriented half-thickness block + mesh) once picked up.
 	
+
+---
+
+## 2026-07-10 — Multi-block stack destruction: block-immunity finding inverted, topmost-removal + count-based combat lock (committed 4319c3e)
+
+Session picked up the block-immunity finding from 2026-07-07 (queued as its own inspection). Baselined clean at ff19e57, level with origin. Fresh session note: the git repo + Godot project root is the nested `dots/` subdir, not the outer `Dots/` container — the outer path is not a repo.
+
+### The finding was inverted by inspection
+
+The 2026-07-07 note hypothesized "winning a `combat_resolve` against a block does not reliably destroy it." Inspection refuted that directly: a won block-defender fight DOES delete a node unconditionally (`to_delete[defender] -> _remove_dot`, no failure path; 204/204 attacker wins = 204 real deletions last run). The visible immunity was three compounding facts, not a failed deletion:
+
+	1. Removal ordering (defect): within a stack cell all blocks tie on distance, and the strict `<` tie-break keeps the FIRST array occupant (oldest = stack_index 0 = bottom). So combat always deleted the BOTTOM node; survivors never repositioned, so the silhouette never shrank — floaters.
+	2. Build/combat concurrency (defect): `_execute_build` had zero combat awareness; COLONY0 block count grew 16 -> 2163 monotonically in one run, swamping serialized combat removals (~1 per 3 ticks per cell) roughly 10:1. Re-adds overlapped floater heights because stack_index is recomputed as live node count.
+	3. Fixed `d_power = 0.5` (NOT a defect): per-node BLOCK_DEFEND_VALUE, as designed. This closes the stacking-adds-defense thread permanently.
+
+### Concurrency confirmed empirically
+
+Before choosing lock design, checked telemetry (run 1783466273) for two block-fights live on one stack cell in the same tick: found it — cell (125,111) had x2 `combat_init` at tick 165 and x2 `combat_resolve` at tick 168. So the lock had to be a COUNT, not a boolean (a boolean released on first resolve reopens the race while a second fight is still live). Records key attacker by colony only, not dot id, so this is "can happen" established empirically rather than reasoned away.
+
+### What shipped (commit 4319c3e, main.gd only, 68 insertions / 4 deletions)
+
+	Topmost-removal: the block-win branch in `_tick_combat_clusters` now selects the highest-stack_index live same-colony block in the cell (not the targeted bottom node), with a per-resolution `block_defeated` tracker preserving "one layer per fight" semantics. Single-block behavior is byte-identical (traced: victim falls through to defender, same deletion, same advance, same claim).
+	Count-based per-exact-cell lock: new `combat_locked_cells` dict, incremented once per new block-defender cluster in `_initiate_combat` (storing `locked_cell` on the cluster), decremented once per cluster teardown via the idempotent `_release_cell_lock` helper wired into both erase loops (`_tick_combat_clusters` resolution + `_remove_dot`). `_execute_build` skips locked cells at both create sites (banner-build + founder). Leak-integrity traced: every cluster is destroyed via exactly one of the two erase sites (grep-confirmed the only two), each releasing first; resolution erases the cluster before `_remove_dot` runs so no double-decrement; decay routes through `_age_dots -> _remove_dot`, also covered; marker-erase + n<=0->erase backstops prevent leaks and negatives. A cell always returns to 0.
+
+### Verified
+
+`validate_script` clean (exit 0). Live playtest (arbiter): towers visibly shrank 1-by-1 from the TOP. Telemetry corroboration (run 1783525138): snapshots carry a `combat_locked` field, non-zero in play (32 locked / 16 active at last snapshot) — the lock engages live and tracks with active combat, no runaway climb. Total COLONY0 blocks still grew (ended 2839) but that is off-cell building under banners on the side away from the aggression, NOT contested-cell growth — Dustan confirmed this visually. Design caveat holding as expected: sieges stay serialized (~1 layer per combat cycle per cell), so tall towers grind down slowly rather than collapsing.
+
+### Committed, not pushed
+
+HEAD 4319c3e, one commit ahead of origin/main, zero behind. `main.gd` only, message verbatim via `git commit -F` (no -m, no Co-Authored-By trailer), temp file deleted. Push not yet approved.
+
+### Environment issue flagged (unresolved)
+
+A fresh Code session could not read OR write `res://code_report.md` — "Operation not permitted" via both the Read tool and plain shell, while a sibling file wrote fine and the file itself shows normal perms/no ACLs. `.claude/settings.local.json` is denied identically. Reads as a deliberate tool-level deny rule scoped to Code's session (my MCP `read_script`/`execute_editor_script` access to both paths is unaffected — I can still read code_report.md). Code correctly refused to force-overwrite the unreadable existing report and wrote its output to `scratchpad/code_report.md` instead. UNRESOLVED: determine whether the deny rule is intentional (then permanently route Code reports to scratchpad) or accidental (fix the config). To be chased with a small prompt next.
+
+### Next
+
+	1. Resolve the code_report.md deny-rule question (intentional vs accidental).
+	2. Max build height: towers got obscenely tall in play. Halve the max build height — needs a short inspection first to locate the cap (explicit constant? currently unbounded?) and its value before changing. Fresh Code session; orient off this DEVNOTES + independent git baseline.
+	3. Waller roadmap resumes at stage (c) (oriented half-thickness block + mesh) when picked up. Stage (d)'s waller lock can now safely depend on wall-death — topmost-removal makes "the wall dies" actually work.
+
+
+---
+
+## 2026-07-11 — Monument height bounded (committed 7f6b640); code_report deny-rule closed as artifact; workflow moved to Claude Code desktop app
+
+Goal was "halve the max build height." Inspection refuted the premise: there was no max build height to halve. This became a four-step arc, all now committed in 7f6b640 (main.gd, 83 insertions / 20 deletions), on top of 4319c3e.
+
+### The premise was wrong — no cap existed
+
+`_create_block` always creates, unbounded. The only height-aware code was `STACK_HEIGHT_SOFTCAP = 10`, a probabilistic stack-vs-lateral bias, and it was decorative: the ternary at ~717 collapsed to `banner_cell` for on-cell builders (`my_cell == banner_cell`), so the height roll did nothing and they stacked forever. That was the unbounded-growth source. Halving 10->5 would have done nothing to the spires (they route around the gate), so the halve-a-constant task was discarded.
+
+### What shipped (option B — soft bound, not a hard cap; Dustan's explicit choice)
+
+	1. On-cell height-gated lateral shed: on a failed height roll the on-cell builder sheds to a weighted-lowest ring neighbour via the revived `_pick_lateral_cell` (was intentionally-retained dead code; revival sanctioned, seam-wrap idiom preserved).
+	2. Off-cell receiving-cell gate: off-cell builders now roll against `my_cell`'s own height (not the banner's) and shed to a weighted-lowest neighbour on failure, constrained to the banner footprint. This closed the dominant tall-cell route.
+	3. Removed the ungated footprint fallback: `_pick_lateral_cell` now pre-filters candidates to eligible cells before the weighted draw; empty set -> Vector2i(-1,-1) sentinel -> skip the build (never place ungated). The fallback was the actual spire route (a cell reached height 23 via ungated `reason=self` builds above the softcap).
+	4. Floored the height factor: `clamp(1 - h/SOFTCAP, STACK_HEIGHT_FACTOR_FLOOR, 1)` with floor 0.05. The softcap is now a strong-discouragement point, not a hard wall — exceedance is rare, not impossible. There is deliberately NO ceiling; what bounds a monument is the ~90-block banner budget, not height.
+
+### Four named tunables now in the constants block
+
+	STACK_HEIGHT_SOFTCAP = 10 (height where stacking bottoms out), STACK_HEIGHT_FACTOR_FLOOR = 0.05 (soft-bound creep rate above softcap), SHED_CONTAINMENT_DIST_SQ = 5 (shed target radius from banner, tighter than the 8 participation radius), SHED_ESCAPE_CHANCE = 0.15 (per-shed chance to skip containment and fray the edge). Tunable without code changes.
+
+### Verified across live runs
+
+Decisive, run-length-independent evidence in run after the final change: `reason=self` placements cut off sharply near the softcap (37/37/37 at h0-2 decaying to singletons at h10-11, nothing above) — structural proof the ungated fallback is gone, since no run length produces that cutoff by chance. `reason=shed` carries the rare above-softcap traffic. Max height 15 (a `stack` placement via the 4% floor). CAVEAT logged: cross-run max-height numbers (45->23->15) are partly confounded by run length (146->121->103 ticks); the self-cutoff is the real proof, not the max trend.
+
+### Still boxy — deferred, not fixed
+
+Footprint is still a 5x5 box, NOT rounded. Reason: `SHED_CONTAINMENT_DIST_SQ` only governs sheds, but `self` is the majority of placements and lands wherever the dot stands, i.e. anywhere in the 5x5 participation radius (`BUILD_FOOTPRINT_DIST_SQ = 8`). The base outline is set by participation, which was non-goaled. Rounding the base means touching the participation radius (affects who can build at all) — its own pass, deferred. `SHED_ESCAPE_CHANCE` fray is also weak (only rim builders' escapes leave the footprint). Dustan is satisfied with current look for now.
+
+### code_report.md deny-rule — CLOSED as a session artifact (corrects the 2026-07-10 open item)
+
+The 2026-07-10 entry left this open and leaned toward "deliberate deny rule." Resolved: it was session-scoped, not a real rule. A fresh Code session read the path fine; the earlier failure did not recur. My MCP access to the path was never affected. Do NOT chase this as a config problem — it was a transient session-state artifact. Reports route to `res://code_report.md` as normal.
+
+### Workflow change — now driving Code via the Claude Code DESKTOP APP (was CLI)
+
+Same engine, same account, same CLAUDE.md / .mcp.json / .claude config / MCP servers / permission rules — only the surface changed. First desktop commit (7f6b640) verified the two things that could have broken our discipline, both OK: (1) NO worktree divergence — the app commits to the same working tree `/Users/.../Dots/dots` that my Godot-editor MCP inspects (independently confirmed HEAD 7f6b640 matches on both sides); (2) `code_report.md` writes succeed under the app (deny artifact did not recur). One drift to watch: the app APPENDED its report to code_report.md rather than overwriting per convention — restate "overwrite" in future prompts. Standing rules unchanged: per-action git approval (do NOT accept blanket/always-allow in the app's permission UI), Code never runs the game, planner reads reports not source.
+
+### Git / next
+
+HEAD 7f6b640, 2 ahead of origin/main, 0 behind. NOT pushed (awaiting Dustan). DEVNOTES.md modified/unstaged (this entry) — its own commit per convention, separate from feature commits.
+	1. Decide push (2 commits: 4319c3e stack-destruction, 7f6b640 monument-height).
+	2. Optional: round monument base (needs a participation-radius pass — structural, affects build eligibility).
+	3. Waller roadmap resumes at stage (c) (oriented half-thickness block + mesh). Stage (d)'s waller lock can depend on wall-death — now reliable.
+
+
+---
+
+## 2026-07-21 — Pushed 7f6b640; waller stage (c) shipped (uncommitted); build-vs-wall banner priority gap found, unconditional-priority decided; handoff to Fable
+
+### Pushed
+
+Both queued commits (4319c3e stack-destruction, 7f6b640 monument-height) pushed to origin/main, explicit per-action approval from Dustan. `github.com:dkentbrown/dots.git main` now at 7f6b640, 0 ahead / 0 behind.
+
+### Shipped: waller stage (c) — oriented half-thickness wall block (not yet committed)
+
+Per the staged roadmap. Orientation contradiction in the original design spec (DEVNOTES 2026-05-13: line ~868 said long-axis-toward-enemy under "Locked"; line ~884 said long-axis-perpendicular-to-threat under "Open questions") — **resolved: perpendicular to threat**, matching how other wallers later extend the wall line (stage e) so a lone waller's block and the eventual multi-waller line are geometrically consistent.
+
+New `WALL_MESH_SIZE` constant (half-thickness on the facing axis vs `BLOCK_MESH_SIZE`, long axis kept at full cell spacing to tile with future wall-line segments). New `_create_wall_block(cell, colony, threat_dir, builder_id)`, deliberately separate from `_create_block` (different mesh size, orientation source, and no monument stack-index scan) but still `is_block`/`BLOCK_DEFEND_VALUE`/decay so it fights and decays like any block. Reuses `_create_block`'s exact cross-product frame pattern with the reference vector swapped from a fixed world axis to the live threat bearing (`target.position.normalized()`); includes the same degenerate-case (near-parallel-to-normal) fallback `_create_block` uses, to avoid a NaN basis. Wired into the existing Shape D success branch in `_execute_primitive`'s `"defend"` arm, alongside the existing wall-banner drop. `validate_script` clean. Untested in-engine as of writing this note — Dustan was going to test in the Godot editor.
+
+### Live-test finding: build-vs-wall banner priority gap (confirms open question #4, not a tuning problem)
+
+Dustan observed in play: once a waller drops its block, the rest of the population responds to the *build* banner system and piles into a normal monument, ignoring the threat entirely — no wall-line extension happens (stage e isn't built yet) and nothing redirects builders away from ordinary monument behavior. Traced in code, not inferred: `wall_banners` and `build_banners` are two fully separate lists; `_find_eligible_build_banner` (main.gd:854) only ever reads `build_banners`, and nothing anywhere reads `wall_banners` for build-routing purposes. There is no arbitration code at all between the two banner types — this is exactly open question #4 from the original 2026-05-13 spec ("Wall banner vs build banner priority... Lean: wall banner. Not finalized."), now confirmed as the live-observed cause rather than a CCE-tuning issue.
+
+**Decided:** priority is unconditional, not CCE-gated. Any dot in range of an active wall banner drops ordinary build-banner response entirely in favor of the wall response — "dots should ignore monument building in the face of an existential threat," Dustan's words. Simpler to spec than a defend/build-weighted gate, and avoids the awkward case of a low-defend dot standing next to a dying wall doing nothing useful. Not yet implemented — this is a decision, not code.
+
+### Handoff
+
+Session moving to Fable for the priority-arbitration design + stage (e) (other wallers extend the wall line perpendicular to threat bearing) with this note as context. Not scoped or touched by Code this session.
+
+### Git / next
+
+`main.gd` carries stage (c)'s ~60-line uncommitted diff; `DEVNOTES.md` carries this entry, also uncommitted. HEAD still 7f6b640 (0 ahead/0 behind origin, post-push).
+	1. In-engine test of stage (c)'s wall-block orientation/geometry (Dustan, pending).
+	2. Fable: design + implement wall-banner-vs-build-banner unconditional priority, then stage (e) (wall-line extension).
+	3. Commit stage (c) once verified — bundle with the priority/stage-(e) work if Fable's changes land in the same session, per the established bundling convention, or flag if a split is wanted.
+
+
+---
+
+## 2026-07-21 (cont.) — Waller stages (c)+(d)+(e) shipped & verified; wall-banner priority; role expanded to planning+implementation
+
+Fable was on usage credits, so this ran on Opus (same Claude Code desktop app, same config). Stage (c) (uncommitted from the prior Code session) plus stages (d)/(e) and the priority arbitration were all implemented, verified live by Dustan ("works pretty well"), and are being committed together as one coherent waller-consumption unit — per the bundling convention noted in the prior entry.
+
+### Role change — Code is now the planning AND implementation layer
+
+Dustan: "you are now the planning and implementation layer." Reversed the prior implementation-only split (planning/review no longer routed elsewhere) — the project "has been drowning in inspections, time to get things knocked out." Acted on immediately: this session did its own scoping (read the roadmap + code) and carried the implementation through in one pass rather than stopping at an inspection. CLAUDE.md line 1 was reconciled to match ("You are the planning and implementation layer for this project. Scope the work, carry it through, and report accurately." — was "You are the implementation layer... Planning and review happen elsewhere."). The INSPECTION/IMPLEMENTATION/TRIVIAL prompt-type framework and all standing rules (no commit/push unless asked, minimal safe change, report format) are unchanged. Also: appending DEVNOTES is now part of Code's job, not just the planner's.
+
+### What shipped (main.gd)
+
+- **Wall-banner priority (unconditional arbitration).** `_execute_build` now consults `_find_nearest_wall_banner` before any monument logic; an in-range same-colony wall banner (`WALL_BANNER_RADIUS = 15`) fully overrides monument building for that roll and routes to `_respond_to_wall_banner`. Because only build rolls reach `_execute_build`, build-heavy populations naturally swarm the fence while attackers/defenders keep doing their own thing — this is the mechanism behind "a build-heavy population builds a fence." Even a full fence idles the dot rather than letting it fall back to a monument (the "existential threat" framing).
+- **Stage (e) — fence extension.** Wall banners now carry `threat_dir` (threaded through `_drop_wall_banner`, refreshed on re-drop). `_wall_line_target_cell` walks outward from the banner seed along the tangent perpendicular to the threat (exact great-circle steps via `seed_dir*cos + along*sin`), alternating sides, returning the first empty, non-combat-locked cell within `WALL_MAX_HALF_LENGTH = 4` (fence ≤ 9 cells). A responder marches there, then places an oriented segment and fires a `wall_extend` telemetry event. Fence full → `(-1,-1)` → idle.
+- **Stage (d) — perch + lock.** New `wall_perch` dict (waller_dot -> wall_block) with an inverse `perched_by` ref on the block. `_perch_waller` sits the builder one `BLOCK_HEIGHT_STEP` above its segment; `_tick_all_dots` skips perched dots entirely (no rolls, not even observe). Teardown lives in `_remove_dot`, covering both directions: a dying segment (combat OR decay — both route through `_remove_dot`) releases its builder back to the surface via `_place_dot_on_sphere`; a builder that dies first clears the segment's back-ref so no stale reference remains. The original stage-(c) waller in the defend arm now also perches + returns early (skipping its colony-center march) on Shape D success, guarded so it only founds a segment on an empty, non-locked cell.
+
+### Design notes / caveats
+
+- **Build-tendency is the throttle, by design.** Only dots that roll "build" extend the fence, so a low-build colony walls slowly/sparsely. Faithful to the unconditional-priority decision + "build-heavy population." If we later want ANY nearby dot (non-builders too) to drop everything and wall, that's a bigger hook (intercept before the primitive roll) — flagged, not done.
+- **Perched wallers are still valid combat targets** (normal dots sitting on the block). An enemy can kill the builder directly; the segment then stands builderless until it decays or is destroyed. Consistent with "the wall persists independent of its builder."
+- **Fence geometry is a single-file line, seed-outward.** `WALL_MAX_HALF_LENGTH` and the perpendicular tangent are the knobs. Great-circle step is exact; cell quantization could drift a cell near the ends only if the cap is raised well beyond 4.
+
+### Verified
+
+`validate_script` clean throughout. Live in-engine test by Dustan: fence-building behavior "works pretty well." No telemetry deep-dive this pass — the visual confirmation was the bar.
+
+### Git
+
+Committing three focused units this session (main.gd feature / DEVNOTES log / CLAUDE.md role line) and pushing, at Dustan's request. This is the first time Code commits DEVNOTES + CLAUDE.md itself under the expanded role.
