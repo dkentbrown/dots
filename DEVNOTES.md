@@ -1002,7 +1002,15 @@ Enemy colonies are not a permanent game element. Multi-population dynamics (comb
 
 ---
 
-## START HERE NEXT SESSION
+## START HERE NEXT SESSION  ⚠️ SUPERSEDED (2026-05-28 — historical only)
+
+> **STALE — DO NOT HYDRATE FROM THIS SECTION.** Kept for history. It predates the design bible
+> reconciliation. The "Tier 1 verb set" quoted below (`exchange, teach, ritualize, incorporate`…)
+> is an early procedural-civ report list that matches **neither** `Noema_Design_Bible_v0.4.docx`
+> **nor** the current code. The authoritative primitive vocabulary is the bible's
+> (motion: wander/cluster/spread/face_target/spiral_path · action: mark_surface/build_upward/
+> gather/defend/attack/reproduce). For current state, read the LAST entry in this file and
+> `RECONCILIATION.md`.
 
 Resource system is complete enough for design work on the primitives. Specks spawn, dots collect, colonies accumulate. The next stage is **not** another resource feature — it's revisiting the primitive set in light of the working resource system.
 
@@ -1902,3 +1910,100 @@ Bundling this polish as one `main.gd` commit + this DEVNOTES entry (its own comm
 ### Next (backlog, per the "where to" survey this session)
 
 Two genuinely large threads remain, both needing a design pass before code: (1) **North Star behavioral model** — 8 of 9 P(r) score terms (M/T/S_am/S_at/S_mt/C/E/H) are dormant zeroed stubs; lighting them up is the sim's core behavioral depth. (2) **Combat-effectiveness / tiered-balance** — defend banner + roll-twice-take-highest luck modifier, never scoped. Plus tech-debt (uniform detection radius / equirectangular distortion) and UX (gather verb unreachable — no chant alias). None urgent; combat-walls no longer blocks any of them.
+
+> **CORRECTION (see the 2026-07-21 cont. 3 entry below):** point (1) above is WRONG. The 8 dormant
+> NS score terms are **not** in the design bible and are **not** core depth — they're post-bible
+> scaffolding. With only `A` live the code already matches the bible's plain weighted softmax.
+> Do not invest in lighting them up.
+
+
+---
+
+## 2026-07-21 (cont. 3) — DESIGN BIBLE FOUND; Tier 1 vocabulary completed; planning reset. **Hydration entry — start here.**
+
+This is the current-state entry. If you are a fresh session, read this plus `RECONCILIATION.md`, and read `Noema_Design_Bible_v0.4.docx` before any design discussion.
+
+### The big one: the design bible existed and had never been read
+
+`Noema_Design_Bible_v0.4.docx` sits in the repo root and had never been opened by any Code session. It is **the canonical vision doc** and it answers essentially every product/vision question we'd been re-deriving from scratch. Prior sessions (including mine) planned against `DEVNOTES` alone and drifted.
+
+**The game is "Noema."** Persistent MULTIPLAYER world sim, ~10,000 colonies on one shared sphere. The player is an *influence*, not an avatar — the only input is the **chant**. Chants are interpreted **server-side by an LLM (Ollama)** into "primitive recipes" (weight deltas + dial adjustments) written into each dot's **CCE** (Cumulative Chant Exposure). CCE **dilutes** across generations (0.7 — "the most important tuning variable"); silence = slow cultural death. The question the game asks: *"can you leave a cultural mark that survives your absence?"* Theme: civilizations drift, **contaminate each other by proximity (CCE blending)**, and die by time/dilution/silence — not conquest. Aggression is a designed evolutionary dead end. Godot 4 mobile client + server authority + LLM + DB.
+
+⚠️ **`pandoc` is NOT installed.** Extract the bible with `python3` zipfile + regex over `word/document.xml` (exact command is now in `CLAUDE.md`).
+
+### Planning reset: `RECONCILIATION.md` (new, untracked)
+
+Wrote a bible↔code gap analysis, then restructured it around the **three-tier model** (DEVNOTES 2026-05-28, ~line 927), which turns out to be the bridge between code and bible:
+
+| Tier | Model | Bible equivalent | Status |
+|---|---|---|---|
+| 1 | **Verbs** (per-dot primitives) | motion + action primitive layers | **essentially complete** (this session) |
+| 2 | **Modes** (colony-scale behavior) | **ECBs** | the live design fork — banners live here |
+| 3 | **Motifs** (persistent structures) | monuments, wall lines | partially built |
+
+Each divergence has a `DECISION:` field for a canon call (BIBLE / CODE / MIX / DEFER). **No canon calls have been made yet.**
+
+### Shipped: Tier 1 vocabulary completed (main.gd, uncommitted)
+
+Wired the five bible primitives that had never been implemented — executors + CCE slots (weight `0.0`) + helpers:
+
+- **`cluster`** (motion) — steps toward the local centre of mass of same-colony neighbours; radius scales with the `range` dial; holds if no neighbours.
+- **`spread`** (motion) — steps away from that centre; lone dots do an undirected drift.
+- **`spiral_path`** (motion) — dedicated spiral-tangent step, amplified by the `spiral` dial.
+- **`face_target`** (motion) — orientation only, no movement; turns to face the nearest foreign dot in range.
+- **`mark_surface`** (action) — drops a persistent flat quad flush on the surface, **coloured by the dot's own CCE tint** (so a red-tinted culture paints red — the bible's "Red Painting" ECB); size + lifespan scale with `intensity`; decays by TTL.
+
+New helpers: `_local_ally_center`, `_face_dir`, `_create_surface_mark`, `_tick_surface_marks` (wired into the tick loop). New constants: `COHESION_RADIUS_MIN/MAX`, `FACE_SCAN_RADIUS_MIN/MAX`, `MARK_TTL_MIN/MAX`, `MARK_SIZE_MIN/MAX`. `validate_script` clean.
+
+**They are DORMANT** — added at weight `0.0` in `NEUTRAL_CCE` and both presets, so nothing selects them until **recipes** (chant→CCE entries) raise them. That is the immediate next step.
+
+Deliberately deferred: `spiral` still exists as a dial alongside the new `spiral_path` primitive (coexist, reconcile later); `gather` and `observe` untouched; `frequency` + `affinity` dials still unbuilt (**`affinity` is the big Tier 1 dependency** — face_target/cluster/spread/mark_surface all use fixed defaults where affinity would supply bias); `CCE_COLORS` not extended for the new verbs (cosmetic, zero effect at weight 0).
+
+### FINDING (open, unresolved): the walling condition is indiscriminate
+
+Traced in response to "what exactly is the walling condition?" The chain: a dot must have rolled `observe` and found a foreign entity within `3 + 20×observe_weight` cells (= **5 cells** at current presets — *detection at range, not contact*); then roll `defend` while that observation is live (the defend arm **reads but never consumes** `pending_observe`, so one sighting fuels many rolls); then pass Shape D = `defend × colony_avg_build × 2.0` (= **8%** for COLONY0).
+
+Two consequences worth deciding on:
+
+1. **Any foreign colony triggers it.** `_find_nearest_foreign_in_radius` filters on `colony != my_colony` and nothing else. **There is no hostility, faction, or relationship model anywhere in the codebase** — `ENEMY_COLONY = 1` is a spawn constant, not a stance.
+2. **Foreign BLOCKS count as enemies.** The finder has no `is_block` filter, so an enemy *monument or wall segment* in observe range registers as "enemy" and triggers walling with no living enemy nearby. A static enemy monument becomes a **permanent walling trigger**. Blocks massively outnumber dots (last run: 865 blocks vs 648 dots), so **foreign blocks are plausibly the dominant detection hit** — most walling may be reacting to buildings, not threats.
+
+Also: the wall is built at **the defender's own cell** (wherever it's standing), not at the border — it is *oriented* perpendicular to the threat bearing but not *positioned* relative to it.
+
+**Three levers, increasing bite:** (a) exclude blocks from enemy detection — a one-line `is_block` filter, nearly free, likely the real culprit; (b) add a proximity requirement tighter than observe radius; (c) gate harder (= the T2.b banner-gating work). **Not decided.**
+
+### Corrections to earlier analysis (I was wrong about these)
+
+Recorded so they aren't re-derived:
+- **Wallers are NOT player-controlled.** Shape D is gated on CCE the player built organically; the dot decides autonomously. This passes the bible's own §13 test ("the player chants concepts, the simulation determines outcomes"). My first draft claimed otherwise — struck.
+- **Banners are not a waller wart.** Rally (attack) and build banners predate wallers; banner-coordination is the codebase's foundational pattern. Singling out wallers was wrong — wall banners are in fact the **best-gated** of the three.
+- **Design intent for banners (Dustan):** a banner is a **late-game, heavily-specialized** behavior. Having enough CCE to build/attack/wall should NOT trigger a banner; only deeply accumulated CCE should. That's a **two-tier emergence** (shallow CCE → individual verb; deep CCE → coordinated mode) and it's in the bible's spirit but never formalized there — a candidate v0.5 addition.
+- **Current gating does NOT match that intent:** rally banners drop on combat *contact* (ungated); build banners on a flat `BUILD_START_CHANCE = 0.05` roll; only wall's multiplicative Shape D is genuinely rare. **Wall's Shape D is the template the others should match.**
+- **The NS 9-term score model is not core** (see correction box above).
+
+### Steers this session
+
+- **Dilution / drift is NOT a priority right now** (Dustan) — `S.a` in RECONCILIATION stays parked despite being bible-core.
+- The combat colony model is considered "fairly working."
+- Explicit instruction to stop over-analyzing: wire primitives → then recipes → backend later.
+
+### Also shipped
+
+`CLAUDE.md` updated: KEY PROJECT FILES now points at the bible (with the extraction command), `RECONCILIATION.md`, and telemetry's cumulative-slice gotcha; added an ENVIRONMENT NOTES section (Claude doesn't run the game; TCC access failures + Godot-MCP fallback). The stale `## START HERE NEXT SESSION` at ~line 1005 is now marked **SUPERSEDED** — it quoted a third, obsolete verb list and was a live hydration hazard.
+
+### Git / next
+
+**Working tree is CLEAN — everything from this session is committed and pushed.** Four focused commits on top of `f1524b0`:
+
+- `47c7cf2` — `feat:` Tier 1 primitives (cluster, spread, spiral_path, face_target, mark_surface) — `main.gd` only.
+- `137adf5` — `docs:` add `RECONCILIATION.md` (bible↔code gap analysis on the three-tier spine).
+- `3826153` — `docs:` point `CLAUDE.md` key project files at the design bible + reconciliation doc.
+- (this entry) — `docs:` session log.
+
+A fresh session should therefore find `git status` clean and `origin/main` level. Nothing is parked in the working tree.
+
+1. **Recipes** — chant entries for the new Tier 1 verbs (+ a `gather` alias), so the vocabulary is reachable and testable. Shape the payload to the bible's `/chant` contract (`{motion:{}, action:{}, dials:{}}`) so the eventual server flip is one line.
+2. **Decide the walling condition** — start with the block-exclusion lever (a).
+3. **`affinity` dial** — the gating dependency for expressive Tier 1 behavior.
+4. Canon calls in `RECONCILIATION.md` (none made yet); T2.a (mode architecture) is the big one.
+5. Parked: dilution/blending, the server/LLM/MP spine, NS stubs.
