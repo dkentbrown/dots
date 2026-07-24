@@ -119,6 +119,17 @@ const REPRODUCE_CHANCE_MAX = 0.9       # reproduce probability at intensity 1
 const MOVE_NUDGE_MIN = 0.01            # undirected-drift nudge at range_val 0
 const MOVE_NUDGE_MAX = 0.08            # undirected-drift nudge at range_val 1
 
+# Motion primitive tuning (cluster / spread / spiral_path / face_target)
+const COHESION_RADIUS_MIN = 2         # cells scanned for local same-colony neighbours at range 0
+const COHESION_RADIUS_MAX = 6         # ...at range 1
+const FACE_SCAN_RADIUS_MIN = 3        # cells scanned for a foreign target to face at range 0
+const FACE_SCAN_RADIUS_MAX = 8        # ...at range 1
+# mark_surface: persistent surface marks; permanence and size scale with the intensity dial
+const MARK_TTL_MIN = 60               # ticks a mark persists at intensity 0
+const MARK_TTL_MAX = 400              # ...at intensity 1
+const MARK_SIZE_MIN = 0.006           # mark quad edge at intensity 0
+const MARK_SIZE_MAX = 0.014           # ...at intensity 1
+
 const OBSERVE_BASE_RADIUS := 3
 const OBSERVE_SCALE := 20
 
@@ -129,7 +140,10 @@ const OBSERVE_MOVE_MAP = { "speck": "gather" }
 const NEUTRAL_CCE = {
 	"motion": {
 		"move": 0.0,
-		# "face_target": reserved \u2014 not yet wired
+		"cluster": 0.0,
+		"spread": 0.0,
+		"spiral_path": 0.0,
+		"face_target": 0.0,
 	},
 	"action": {
 		# Reserved primitives \u2014 not yet wired, kept for forward compatibility
@@ -201,6 +215,7 @@ const CHANT_RECIPES = {
 var dots = []
 var dot_data = {}
 var specks = []
+var surface_marks = []  # [{node: MeshInstance3D, ticks_remaining: int}] — mark_surface output, decays by TTL
 # Live-dot record (see _create_dot):
 # dot_data[dot] = {
 #   "age": int,                 # ticks lived, dies at DOT_LIFETIME
@@ -228,6 +243,10 @@ const FOG_EMISSION = Color(0.1, 0.1, 0.1)
 const COLONY1_CCE = {
 	"motion": {
 		"move": 0.40,
+		"cluster": 0.0,
+		"spread": 0.0,
+		"spiral_path": 0.0,
+		"face_target": 0.0,
 	},
 	"action": {
 		"mark_surface": 0.0,
@@ -248,6 +267,10 @@ const COLONY1_CCE = {
 const COLONY0_CCE = {
 	"motion": {
 		"move": 0.40,
+		"cluster": 0.0,
+		"spread": 0.0,
+		"spiral_path": 0.0,
+		"face_target": 0.0,
 	},
 	"action": {
 		"mark_surface": 0.0,
@@ -357,6 +380,7 @@ func _process(delta):
 		_tick_wall_banners()
 		_tick_combat_clusters()
 		_tick_specks()
+		_tick_surface_marks()
 		_tick_all_dots()
 		_update_hud()
 		# Post-tick state snapshot (after all mutations resolve). Captures ALL colonies.
@@ -644,9 +668,52 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 			_execute_build(dot)
 		"observe":
 			_execute_observe(dot)
-		# mark_surface, face_target: reserved no-op (no executor here).
-		# gather also has no match-case executor, but its CCE weight is NOT inert: it
-		# gates directed move via OBSERVE_MOVE_MAP (speck -> gather).
+		"cluster":
+			# Cohesion: step toward the local centre of mass of same-colony neighbours.
+			# With no neighbours in range, hold position. Radius widens with the range dial.
+			var dir = dot.position.normalized()
+			var radius = int(lerp(float(COHESION_RADIUS_MIN), float(COHESION_RADIUS_MAX), range_val))
+			var center = _local_ally_center(dir, dot_data[dot]["colony"], radius, dot)
+			if center != Vector3.ZERO:
+				_march_toward_dir(dot, dir, center, dot_data[dot]["colony"])
+		"spread":
+			# Separation: step away from the local same-colony centre of mass. With no
+			# neighbours, fall back to an undirected drift so lone dots still disperse.
+			var dir = dot.position.normalized()
+			var radius = int(lerp(float(COHESION_RADIUS_MIN), float(COHESION_RADIUS_MAX), range_val))
+			var center = _local_ally_center(dir, dot_data[dot]["colony"], radius, dot)
+			if center != Vector3.ZERO:
+				# Aim at the point on the far side of the dot from the centre = move away.
+				var away_target = (2.0 * dir - center).normalized()
+				_march_toward_dir(dot, dir, away_target, dot_data[dot]["colony"])
+			else:
+				var nudge = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val)
+				var tangent = dir.cross(Vector3(randf_range(-1,1), randf_range(-1,1), randf_range(-1,1))).normalized()
+				_place_dot_on_sphere(dot, (dir + tangent * nudge).normalized(), true)
+		"spiral_path":
+			# Dedicated spiral motion: a consistent great-circle-tangent step, amplified by
+			# the spiral dial. (Distinct from move's optional spiral bias.)
+			var dir = dot.position.normalized()
+			var up = Vector3.UP if abs(dir.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
+			var tangent = dir.cross(up).normalized()
+			var nudge = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val) * (1.0 + spiral)
+			_place_dot_on_sphere(dot, (dir + tangent * nudge).normalized(), true)
+		"face_target":
+			# Orientation only, no movement: turn to face the nearest foreign dot in range.
+			# No target -> no-op. Scan radius widens with the range dial.
+			var dir = dot.position.normalized()
+			var radius = int(lerp(float(FACE_SCAN_RADIUS_MIN), float(FACE_SCAN_RADIUS_MAX), range_val))
+			var tgt = _find_nearest_foreign_in_radius(dir, dot_data[dot]["colony"], radius)
+			if tgt != null and dot_data.has(tgt):
+				_face_dir(dot, tgt.position.normalized())
+		"mark_surface":
+			# Leave a persistent mark at the dot's position, coloured by the dot's own CCE
+			# tint (so a red-tinted culture paints red). Permanence/size scale with intensity.
+			var mat = dot.material_override as StandardMaterial3D
+			var mark_color = mat.albedo_color if mat != null else Color(1, 1, 1)
+			_create_surface_mark(dot.position.normalized(), mark_color, intensity)
+		# gather has no match-case executor, but its CCE weight is NOT inert: it gates
+		# directed move via OBSERVE_MOVE_MAP (speck -> gather).
 
 func _execute_attack(dot: Node3D, intensity: float):
 	var my_colony = dot_data[dot]["colony"]
@@ -1639,6 +1706,53 @@ func _get_foreign_dots_near(dir: Vector3, my_colony: int) -> Array:
 						result.append(occupant)
 	return result
 
+# Local centre of mass of same-colony dots within `radius` cells (excluding `exclude` and
+# blocks). Returns Vector3.ZERO if there are no neighbours. Used by cluster (toward) and
+# spread (away). Mirrors the u-wrap / v-clamp neighbourhood walk of the detection scans.
+func _local_ally_center(dir: Vector3, my_colony: int, radius: int, exclude: Node3D) -> Vector3:
+	var key = _cell_key(dir)
+	var sum = Vector3.ZERO
+	var count = 0
+	for du in range(-radius, radius + 1):
+		for dv in range(-radius, radius + 1):
+			var ny = key.y + dv
+			if ny < 0 or ny > GRID_RES - 1:
+				continue
+			var neighbor = Vector2i((key.x + du + GRID_RES) % GRID_RES, ny)
+			if spatial_grid.has(neighbor):
+				for occupant in spatial_grid[neighbor]:
+					if occupant == exclude:
+						continue
+					if not dot_data.has(occupant):
+						continue
+					if dot_data[occupant].get("is_block", false):
+						continue
+					if dot_data[occupant]["colony"] != my_colony:
+						continue
+					sum += occupant.position.normalized()
+					count += 1
+	if count == 0:
+		return Vector3.ZERO
+	return (sum / float(count)).normalized()
+
+# Orient a dot to face a target direction along the sphere surface, without moving it.
+# y = surface normal; z (forward) = the surface tangent pointing toward the target.
+func _face_dir(dot: Node3D, target_dir: Vector3) -> void:
+	var dir = dot.position.normalized()
+	var toward = target_dir - dir
+	if toward.length_squared() < PARALLEL_EPSILON:
+		return
+	var tangent = dir.cross(toward)
+	if tangent.length_squared() < PARALLEL_EPSILON:
+		return
+	tangent = tangent.cross(dir).normalized()  # tangent aimed at the target along the surface
+	var new_basis = Basis()
+	new_basis.y = dir
+	new_basis.z = tangent
+	new_basis.x = new_basis.y.cross(new_basis.z).normalized()
+	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
+	dot.transform.basis = new_basis
+
 # --- Dot management ---
 
 func _age_dots():
@@ -1810,6 +1924,34 @@ func _create_speck(dir: Vector3) -> void:
 func _tick_specks() -> void:
 	if randf() < SPECK_SPAWN_CHANCE:
 		_create_speck(_cell_to_dir(Vector2i(randi() % GRID_RES, randi() % GRID_RES)))
+
+# mark_surface output: a flat coloured quad flush on the surface, just under the dots. Size
+# and lifespan scale with the intensity dial. Marks decay by TTL (see _tick_surface_marks).
+func _create_surface_mark(dir: Vector3, color: Color, intensity: float) -> void:
+	var mark = MeshInstance3D.new()
+	var quad = BoxMesh.new()
+	var s = lerp(MARK_SIZE_MIN, MARK_SIZE_MAX, intensity)
+	quad.size = Vector3(s, 0.001, s)
+	mark.mesh = quad
+	var mat = StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.emission_enabled = true
+	mat.emission = color
+	mat.emission_energy_multiplier = 0.4
+	mark.material_override = mat
+	mark.position = dir.normalized() * (SPHERE_RADIUS + DOT_SURFACE_OFFSET * 0.5)
+	add_child(mark)
+	var ttl = int(lerp(float(MARK_TTL_MIN), float(MARK_TTL_MAX), intensity))
+	surface_marks.append({ "node": mark, "ticks_remaining": ttl })
+
+func _tick_surface_marks() -> void:
+	var i = surface_marks.size() - 1
+	while i >= 0:
+		surface_marks[i]["ticks_remaining"] -= 1
+		if surface_marks[i]["ticks_remaining"] <= 0:
+			surface_marks[i]["node"].queue_free()
+			surface_marks.remove_at(i)
+		i -= 1
 
 # --- Camera ---
 
