@@ -1,6 +1,6 @@
 # NOEMA — Bible ↔ Code Reconciliation
 
-**Status:** draft for review · created 2026-07-21 · restructured 2026-07-21 around the three-tier spine · author: Claude Code (planning+implementation layer)
+**Status:** draft for review · created 2026-07-21 · restructured 2026-07-21 around the three-tier spine · updated 2026-07-24 (Tier 1 recipes shipped; first canon call made — S.c soul) · author: Claude Code (planning+implementation layer)
 **Sources:** `Noema_Design_Bible_v0.4.docx` (design canon) vs. `main.gd` (current code) + `DEVNOTES.md` (tactical log).
 
 ## Why this document exists
@@ -37,20 +37,31 @@ The bible's fixed vocabulary is motion = wander, cluster, spread, face_target, s
 - Previously live: `move` (wander), `defend`, `attack`, `reproduce`, `build` (build_upward).
 - **Just added** (this session): `cluster`, `spread`, `spiral_path`, `face_target`, `mark_surface` — executors + CCE slots (at weight 0.0) + helpers. Compiles clean; dormant until recipes/test-weights raise them.
 
-### T1.a — `gather` reachability
-**Bible:** `gather` is an action primitive. **Code:** functional as the observe→move→collect composite, but **unreachable** — no `gather`/`harvest` chant alias exists, so it can't be raised in play.
-**Rec: BIBLE — add a chant alias (folds into the recipe work below). Cost: S.**
-`DECISION: ______`
+### T1.a — `gather` reachability — ✅ NOT A GAP (this row was wrong)
+**Correction (2026-07-24):** `gather` was already reachable. `CHANT_RECIPES` has carried `gather`/`collect`/`forage`/`harvest` since commit `209e057` ("feat: add gather chant trigger co-raising gather and observe"), each raising `gather` **and** `observe` by `CHANT_WEIGHT` — the co-raise is deliberate, because the composite needs a live speck observation to consume. The original claim here was drawn from a stale comment in `main.gd` (since corrected) that said "Dead primitives (gather/build/mark) intentionally absent".
+**The verb that is actually unreachable is `build`** — it has an executor (`_execute_build`) and COLONY0 starts it at 0.40, but no chant alias exists, so a player cannot raise it. Flagged, not fixed; not yet approved as work.
+`DECISION: n/a — no divergence. Successor gap: `build` alias, unsequenced.`
 
 ### T1.b — `observe` (in code, not in bible)
 **Code:** a full action primitive (enemy/speck/ally/banner sensing → `pending_observe`). **Bible:** no `observe`. But the 2026-05-28 Tier 1 list *did* include it, so it has an internal claim to being a legit verb.
 **Rec: CODE (bless into v0.5) — it's load-bearing for detection and predates the bible drift; document it as a Tier 1 verb. Cost: S (doc only).**
 `DECISION: ______`
 
-### T1.c — recipes: making the new verbs reachable
-The new verbs are wired at 0.0, so nothing selects them yet. **Recipes** (the chant → CCE-weight mapping — locally the `CHANT_RECIPES` dictionary, eventually the LLM's job) need entries so chants can raise them. This is the immediate next step to make Tier 1 testable.
-**Rec: BIBLE — add local recipe entries / chant aliases for the new verbs; keep the payload shape matching the `/chant` contract. Cost: S–M.**
-`DECISION: ______`
+### T1.c — recipes: making the new verbs reachable — ✅ SHIPPED 2026-07-24
+20 aliases added to `CHANT_RECIPES`, four per verb:
+
+| Verb | Chant words | Dial nudge |
+|---|---|---|
+| `cluster` | cluster · huddle · together · flock | `range −0.05` (tighter cohesion) |
+| `spread` | spread · scatter · disperse · apart | `range +0.05` |
+| `spiral_path` | spiral · coil · twist · whirl | `spiral +0.1 / +0.05` |
+| `face_target` | face · turn · confront · stare | `range +0.05` (wider scan) |
+| `mark_surface` | mark · paint · stain · trace | `intensity +0.05` (deeper, longer-lived) |
+
+`spiral` deliberately raises **both** the `spiral_path` primitive and the legacy `spiral` dial — they coexist until T1.d rules on retiring the dial. Payload shape is the bible's `/chant` contract (`{motion, action, dials}`), so S.b's contract alignment is satisfied: flipping `USE_SERVER` swaps where the dictionaries come from without touching `_apply_recipe`.
+
+**Not done:** multi-word chants. `_process_chant_locally` still does an exact whole-string lookup, so the bible's own §5.3 examples (`'wander far'`, `'build tall toward the moon'`) **do not parse**. Tokenizing on whitespace is ~5 lines. Unsequenced.
+`DECISION: BIBLE — done. Residual gap: multi-word chant parsing.`
 
 ### T1.d — dials (range, intensity built; frequency, affinity, spiral unresolved)
 **Bible dials:** range, intensity, frequency, affinity. **Code dials:** range, intensity, **spiral**, with frequency/affinity reserved-unbuilt.
@@ -92,6 +103,12 @@ Audited against the intent above:
 **Rec: BIBLE — leave the stubs inert or simplify them out; do NOT invest in lighting them up. The sim's depth comes from CCE + dilution + blending, not a scoring model. Cost: 0 (leave) / S (simplify).**
 `DECISION: ______`
 
+**⚠️ Finding (2026-07-24): the softmax compresses CCE differences, and this now matters.**
+Selection is `w = exp(weight)` over primitives with weight > 0. That curve is **flat**: a primitive at 0.9 versus one at 0.4 is only ~**1.65×** more likely to fire, not 2.25×. Two consequences:
+- Large CCE deltas buy small behavioural changes. **This directly caps S.c** — soul can multiply a chant's delta 5×, but the sim will still only shift firing odds modestly, so the "rapid pivot" S.c is designed to deliver is throttled by this curve, not by the multiplier.
+- A `SELECTION_TEMPERATURE` constant was added (`exp(score / T)`), **set to 1.0 = shipped behaviour, unchanged**. Lowering it sharpens selection. It is a lever only; retuning it reshapes ALL primitive selection and is a deliberate call, not a side effect.
+`DECISION (temperature): ______  — likely the first tuning dial once S.c is playtested.`
+
 ---
 
 # TIER 3 — Motifs (persistent structures)
@@ -118,20 +135,58 @@ Audited against the intent above:
 **Bible:** persistent MP, ~10k colonies, chants interpreted server-side by an LLM (Ollama), DB persistence, active/passive ticks, `/chant` `/sync` `/session`. **Code:** local-only prototype; `USE_SERVER = false`, "server not implemented"; chants from a local dictionary; no LLM/DB/MP/passive ticks.
 **Assessment:** the largest gap and the game's identity, but also the biggest lift. No reason to build it before the sim itself is worth persisting.
 **Rec: BIBLE (canon) + DEFER (sequencing). Cheap alignment now: shape the local recipe path (T1.c) to the `/chant` response contract so flipping `USE_SERVER` later is a one-line change. Cost: L (full spine) / S (contract alignment now).**
-`DECISION: ______`
+`DECISION: ______` *(contract-alignment half is done — see T1.c)*
+
+### S.c — soul: the resource economy and chant potency ⚠️ FIRST CANON CALL MADE
+
+**The bible does not have a resource system.** §16 asks it as an open question — *"Resource system — does `gather` have a target? What do resources enable?"* — but the code answered it long ago and half-built it. That answer was never written back into the doc, so the bible understates what exists.
+
+**What the code already had (DEVNOTES ~line 935, "New resource subsystem decided: soul"):**
+- **Soul** is a colony-level scalar resource; **specks** are its physical form, spawning at random surface cells (`SPECK_SPAWN_CHANCE = 0.5`).
+- Two deliberately asymmetric collection paths: **wander = incidental** (any dot ending its tick on a speck cell collects), **gather = directed** (`OBSERVE_MOVE_MAP = {"speck": "gather"}` — `gather`'s CCE weight is not a primitive that fires, it is the *claim ticket* that lets a speck sighting hijack a `move` roll). Luck versus intent: that contrast is the whole reason `gather` exists.
+- **Designed but never built:** build consuming soul; combat plundering pool-to-pool on kills; a TBD `exchange` verb equalizing pools between aligned colonies; monuments passively generating soul.
+- **Until 2026-07-24 nothing consumed soul at all** — the pool was credited, shown in the HUD, logged, and never spent. A source and a sink with no drain.
+
+**The call (Dustan, 2026-07-24): soul weights the effect of a chant on CCE, and the chant consumes it.**
+
+```
+mult = 1.0 + SOUL_CHANT_GAIN * (soul / (soul + SOUL_CHANT_HALF))   # saturating, floor 1.0
+delta_applied = base_delta * mult                                   # primitives AND dials
+soul -= soul * SOUL_CHANT_DRAW                                      # drawn after applying
+```
+Shipped values (all placeholders): gain 4.0, half 100, draw 0.25 → 0 soul = 1.0×, 100 = 3.0×, asymptote 5.0×. Applied **client-side** so `/chant` keeps returning a raw recipe and the `USE_SERVER` flip stays one line.
+
+**Why this is the right shape:**
+- **It satisfies §4 without a spend control.** The player's only input is the chant, so soul had to be consumed by the simulation, never allocated by the player. Consumption rides the chant itself — no toggle, no budget UI.
+- **It makes §13 structural instead of hard-coded.** The bible asserts aggression must be an evolutionary dead end but only proposes a *penalty* ("aggressive dots have lower reproduction probability"). Under S.c an all-attack colony never gathers → its soul dries up → its chants lose bite → it becomes **culturally rigid and cannot pivot when conditions change**. Aggression dies of inflexibility rather than of a designer's thumb. This is the strongest argument for the mechanic and should lead the v0.5 write-up.
+- **It rewards long play and passive play** (§11.3) without rewarding combat, and it gives `gather` a strategic reason to exist beyond flavour.
+- **Spent, not standing** — deliberately. A standing multiplier would make soul permanent stratification (a year-old colony out-chanting a new one forever, across 10,000 concurrent colonies) *and* would leave soul with no sink. Consumption self-balances and turns hoarding into a real choice: spend the reserve now, or keep it for what comes next.
+
+**⚠️ Divergence to record in v0.5:** §5.4 says *"A single chant is a whisper. Repeated chanting is cultural formation."* A 4× multiplier makes one chant from an established colony a **shout**. That is intended — fast pivoting is the design goal — but it is a genuine departure from the doc's slow-accumulation thesis and must be stated, not slipped in. Defensible on the game's own terms: a culture with deep accumulated meaning absorbs new ideas faster.
+
+**Open, unresolved:**
+- **The `[0,1]` clamp saturates high-soul colonies in ~3 chants**, after which further chanting is a no-op. Either raise the clamp or make the multiplier scale *movement toward* 1.0 rather than adding a flat delta. **Most likely thing to bite in tuning.**
+- All three constants are first-pass guesses.
+- **Throttled by T2.c** — see the softmax-compression finding; the pivot speed S.c promises is capped by the selection curve's flatness, not by the multiplier.
+- **Untestable as designed today:** `_apply_recipe` skips every non-`LOCAL_COLONY` dot and there is no chant path for colony 1, so the two-population comparison that motivated the design cannot be run without dev scaffolding.
+- This resolves the per-colony vs. per-dot soul fork **in favour of per-colony** (`_apply_recipe` is already colony-wide). Per-dot soul options — death-bed CCE transfer, blending resistance, per-dot lifetime extension — get harder if this stays the primary consumer.
+- The other designed consumers (build cost, combat plunder, `exchange`) remain unbuilt and now compete with S.c for the same pool.
+
+`DECISION: CODE — soul + speck economy and soul-weighted chant potency are canon; write both into bible v0.5 (new "Resources and Soul" section) and strike the §16 resource question. Cost: shipped (S) + M (bible v0.5 section).`
 
 ---
 
 ## Bible's own open questions (§16) — still unresolved in the doc
 
-Carry these into the roadmap: CCE-blending proximity radius & rate · resource system (does `gather` have a target?) · visual feedback for CCE drift · win condition vs. pure sandbox · colony colour/identity · new-player starting buffer · affinity-dial implementation (see T1.d).
+Carry these into the roadmap: CCE-blending proximity radius & rate · ~~resource system (does `gather` have a target?)~~ **— answered in code, see S.c; strike from v0.5** · visual feedback for CCE drift · win condition vs. pure sandbox · colony colour/identity · new-player starting buffer (**sharpened by S.c** — a soul multiplier widens the gap a newcomer must close) · affinity-dial implementation (see T1.d).
 
 ---
 
 ## The roadmap that falls out (assuming BIBLE-leaning + emergence)
 
-1. **Recipes for the new Tier 1 verbs** (T1.c) + `gather` alias (T1.a) — S. Makes the just-wired vocabulary reachable/testable.
-2. **Re-enable dilution** (S.a) — S, near-instant identity restoration.
+1. ~~**Recipes for the new Tier 1 verbs** (T1.c) + `gather` alias (T1.a)~~ — ✅ **done 2026-07-24** (gather needed nothing; that row was wrong). Awaiting playtest verification via telemetry.
+1b. **Tune S.c** — playtest the soul multiplier, then decide the clamp-saturation fix and whether `SELECTION_TEMPERATURE` drops below 1.0 (T2.c finding). The immediate next work.
+2. **Re-enable dilution** (S.a) — S, near-instant identity restoration. *(Parked by Dustan — not a priority.)*
 3. **Build the `affinity` dial** (+ frequency) (T1.d) — M. Unlocks expressive Tier 1 behavior (directional bias, target choice, mark colour).
 4. **Retune banner gating** to the heavily-spec'd bar (T2.b), using wall's Shape-D as template — M.
 5. **Decide T2.a** (mode architecture) and write the bible v0.5 "cultural crystallization / two-tier emergence" section; formalize `observe` (T1.b) and the NS-stub disposition (T2.c) in the same pass.
@@ -146,13 +201,14 @@ Carry these into the roadmap: CCE-blending proximity radius & rate · resource s
 
 | Ref | Divergence | Call | Notes |
 |-----|-----------|------|-------|
-| T1.a | `gather` reachability | | |
+| T1.a | `gather` reachability | **n/a — no gap** | row was wrong; `build` is the unreachable verb |
 | T1.b | `observe` (code, not bible) | | |
-| T1.c | recipes for new verbs | | |
+| T1.c | recipes for new verbs | **BIBLE — shipped** | 2026-07-24; multi-word parsing still missing |
 | T1.d | dials (affinity/frequency/spiral) | | |
 | T2.a | mode architecture (banners vs emergence) | | **the big one** |
 | T2.b | banner gating too shallow | | |
-| T2.c | NS 9-term selection stubs | | |
+| T2.c | NS 9-term selection stubs | | + softmax-compression finding; `SELECTION_TEMPERATURE` lever added at 1.0 |
 | T3.a | monuments & wall lines | | follows T2.a |
-| S.a | dilution + blending | | identity |
-| S.b | server / LLM / MP spine | | launch milestone |
+| S.a | dilution + blending | | identity; parked by Dustan |
+| S.b | server / LLM / MP spine | | launch milestone; contract alignment done |
+| S.c | soul economy + chant potency | **CODE** | 2026-07-24, **first call made**; shipped, needs tuning |

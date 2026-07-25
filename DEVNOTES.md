@@ -2007,3 +2007,87 @@ A fresh session should therefore find `git status` clean and `origin/main` level
 3. **`affinity` dial** — the gating dependency for expressive Tier 1 behavior.
 4. Canon calls in `RECONCILIATION.md` (none made yet); T2.a (mode architecture) is the big one.
 5. Parked: dilution/blending, the server/LLM/MP spine, NS stubs.
+
+---
+
+## 2026-07-24 — Tier 1 recipes reachable; SOUL given a job (first canon call); 5-colony playtest field; walling gated to the frontier. **Hydration entry — start here.**
+
+Long session, four shipped blocks plus two runs of telemetry. Working tree was clean at `860d53e` at the start.
+
+### 1. Tier 1 recipes shipped — the new verbs are reachable (T1.c)
+
+20 aliases added to `CHANT_RECIPES`, four per verb: `cluster`/huddle/together/flock, `spread`/scatter/disperse/apart, `spiral`/coil/twist/whirl, `face`/turn/confront/stare, `mark`/paint/stain/trace. Dial nudges follow bible §6 (cluster tightens range, spread/face widen it, mark deepens intensity).
+
+**Two corrections to the previous session's claims:**
+- **`gather` was ALREADY reachable** — aliases have existed since `209e057`. The RECONCILIATION T1.a row was wrong; it had been written off a stale comment in `main.gd`. Row struck.
+- **`build` is the actually-unreachable verb** — it has an executor and COLONY0 seeds it at 0.40, but no chant alias exists. Flagged, NOT fixed.
+
+`spiral` deliberately raises both the `spiral_path` primitive and the legacy `spiral` dial; they coexist until T1.d rules. **Still missing:** multi-word chant parsing — `_process_chant_locally` does an exact whole-string lookup, so the bible's own §5.3 examples (`'wander far'`) do not parse.
+
+### 2. SOUL now does something — the first canon call (S.c)
+
+The soul/speck economy had no consumer at all: pool credited, shown, logged, never spent. **Dustan's call: soul weights the effect of a chant on CCE, and the chant consumes it.**
+
+```
+mult = 1.0 + SOUL_CHANT_GAIN * (soul / (soul + SOUL_CHANT_HALF))   # saturating, floor 1.0
+delta_applied = base_delta * mult                                   # primitives AND dials
+soul -= soul * SOUL_CHANT_DRAW                                      # drawn AFTER applying
+```
+Shipped placeholders: gain 4.0, half 100, draw 0.25 → 0 soul = 1.0x, 100 = 3.0x, asymptote 5.0x. Applied **client-side** so `/chant` keeps returning a raw recipe and the `USE_SERVER` flip stays one line.
+
+**Why this shape** (worth preserving — it is the argument for v0.5): it satisfies §4 without a spend control (the chant is the only input, so consumption rides the chant), and it makes §13 STRUCTURAL instead of hard-coded — an all-attack colony never gathers, so its soul dries up, its chants lose bite, and it becomes culturally rigid and unable to pivot. Aggression dies of inflexibility rather than a designer's penalty. **Spent, not standing**, deliberately: a standing multiplier would be permanent stratification across 10,000 colonies and would leave soul with no sink.
+
+**Divergence recorded for v0.5:** §5.4 says "a single chant is a whisper" — a 4x multiplier makes one chant from an established colony a shout. Intended (fast pivots are the goal), but it is a real departure and must be stated.
+
+### 3. Five-colony playtest field (TEST HARNESS — `TEST_FIELD = true`, currently ON)
+
+Replaces the player+enemy spawn with five seeded colonies on a small circle of `TEST_FIELD_RADIUS_DEG = 30`, 8 dots each: **0 builders · 1 raiders · 2 gatherer-builders · 3 nomad-raiders · 4 generalists** (equal weight across the whole vocabulary; the ONLY colony exercising the five new verbs).
+
+CCE climbs via `_tick_autochant()` — every `AUTOCHANT_INTERVAL = 5` ticks each surviving colony re-chants its lean at `LEAN = 0.02`, **through the real `_apply_recipe` path** (same recipe shape, same soul multiplier, same pool draw), so runs exercise the shipped mechanic rather than a synthetic poke. `_apply_recipe(recipe, colony)` was generalized (defaults to `LOCAL_COLONY`, so player call sites are untouched) — this also supplied the colony-1..4 chant path S.c needed.
+
+⚠️ **`TEST_FIELD = true` means the default spawn is the field, not player-vs-enemy.** Set false to restore shipped behaviour.
+⚠️ **Telemetry `primitives` changed shape** — now nested per-colony (`{colony: {primitive: count}}`), was flat. Old-run parsers will not match.
+⚠️ `MAX_POPULATION_PER_COLONY = 1000` x 5 colonies = a 5,000-dot ceiling. Not lowered.
+
+### 4. Bugs found and fixed
+
+- **Pre-existing: every colony's defenders marched at colony 0.** `_cached_colony_center` was computed for `LOCAL_COLONY` only and read by `defend`'s fallback march. Harmless at 2 colonies, fatal to a 5-colony experiment. Replaced with `_cached_colony_centers` (per colony, one pass). Colony 0's value is bit-identical — block inclusion deliberately unchanged.
+- **Walling was indiscriminate — now gated to the frontier** (Dustan's request). Two independent causes, both fixed in the `defend` arm: (a) the sighting was **never consumed**, so one scout's report fuelled unlimited Shape D rolls tick after tick; (b) **foreign BLOCKS counted as enemies**, so static enemy architecture triggered walling. Now: living enemy dots only, and the sighting is consumed by the attempt, win or lose. Filtered at the defend site rather than inside `_find_nearest_foreign_in_radius`, because that finder also feeds `attack`, which is still allowed to target blocks. **Side effect to know:** attack reads the same `pending["enemy"]` slot, so a defend roll now spends the sighting.
+- **Shape D probability was unclamped.** `defend x avg_build x SHAPE_D_SCALE` reached **1.72** for generalists — `randf() < 1.72` always succeeds, so they walled on 93% of rolls. Clamped to [0,1].
+- **`mark_surface` was rendering as a paper-thin FIN, not a mark.** `_create_surface_mark` set `position` but never a basis, so the mesh's 0.001 axis stayed world-Y while the surface normal pointed elsewhere — at the equator (where colonies spawn) that is 90 degrees out, and every mark stood edge-on. It was also floating at +0.00375, over 3x its own thickness above the surface. Fixed both: basis with `y = surface normal` (same construction as `_create_block`), and centred at exactly `SPHERE_RADIUS` so the tile straddles the surface half-embedded. **Verified flat by Dustan.** Marks are now the one object type that deliberately ignores `DOT_SURFACE_OFFSET`.
+
+### 5. Telemetry added
+
+Per-tick `primitives` tally (per colony, counts SELECTION not execution — the reachability signal) and `marks` count folded into the existing snapshot; new `chant_applied` record (`soul_before`/`mult`/`soul_after`/`recipe`); `field_colony` record at spawn. Also added `SELECTION_TEMPERATURE = 1.0` as a **lever only** — `exp(score / T)`, 1.0 is byte-identical to shipped behaviour.
+
+### 6. RUN FINDINGS (two runs: 1784909710 @180 ticks, then 1784921411 @148 ticks)
+
+**All five new Tier 1 verbs fire.** Only in c4 as designed, ~8.3% share each — exactly the equal-weight prediction. T1.c verified.
+
+**The walling fix worked, and it hit the aggressors hardest** (per-tick, before → after):
+- Shape D rolls/tick 22.6 → 9.8 (−57%) · wall banners/tick 2.91 → 1.66 · combat inits/tick 1.90 → 0.64 (−66%) · max prob 1.716 → 1.000
+- **Raiders' Shape D rolls fell 10.73/tick → 2.49, nomad-raiders 3.44 → 0.38 (−89%).** Both have `build = 0.0`, so every one of those rolls was a guaranteed failure — 1,932 wasted rolls in run 1, fuelled entirely by stale and block-derived sightings. That was the "everyone walls up" mechanism.
+- **Defensive colonies stopped being farmed:** gatherer-builders were defender in 194 combats → 17, and went from collapsing (8) to surviving (130). Builders 73 → 142. Generalists 438 → 175 (they had been leaning on constant walling).
+
+**⚠️ THREE PROBLEMS THE RUNS EXPOSED — none fixed:**
+
+1. **`gather` is a NO-OP verb.** It has no case in `_execute_primitive`; it only gates directed move via `OBSERVE_MOVE_MAP`. A dot that rolls `gather` does **nothing that tick** — 3,986 wasted ticks in run 1, 2,529 in run 2, 21% of the gatherer colony's entire activity spent idle. Prime suspect for why that colony underperforms.
+2. **Soul never engaged, so S.c is UNVERIFIED.** Peak soul ever held by any colony: **2**. All chant applications ran at x1.0–x1.078. Causes compound: collection needs a dot to end its tick on the exact speck cell out of 40,000; `gather` being a no-op means the gather colony wastes its gathering ticks; and the autochant draws 25% every 5 ticks, faster than anyone collects. **Testing S.c likely needs the draw suspended or collection made viable first.**
+3. **Aggression is dominant, inverting §13.** Both raider colonies cap at 1000 by tick ~101/~121 in both runs. The walling fix made defenders survivable, not competitive. This is a balance call, not a bug.
+
+Also: generalists still wall on 89% of sightings — the clamp stops `prob > 1` but `SHAPE_D_SCALE = 2.0` still pins any dual-stat colony at the ceiling. That is the **T2.b** "gating should require deep specialization" gap, now measured.
+
+### 7. Docs
+
+`RECONCILIATION.md`: **first canon call made** — new **S.c** row (soul economy + chant potency, CODE, into v0.5). T1.a struck as wrong, T1.c marked shipped with the alias table, T2.c gained the softmax-compression finding, §16's resource question marked answered-in-code, decision log and roadmap updated.
+
+**Softmax compression finding (T2.c), worth remembering:** selection is `exp(weight)`, which is FLAT — a primitive at 0.9 vs one at 0.4 is only ~1.65x more likely to fire. So large CCE deltas buy small behavioural changes, and **this caps S.c**: the multiplier can be 5x but the pivot speed it promises is throttled by the selection curve, not by the multiplier. `SELECTION_TEMPERATURE` is the lever; lowering it sharpens ALL selection.
+
+### Next
+
+1. **`gather` needs a real executor** — biggest unaddressed finding, and it gates the soul supply, which gates S.c verification.
+2. **Aggression balance** (§13) — design call, not a bug.
+3. **Perch-death** — `wall_perch` freezes a waller completely (no rolls, not even observe) until its segment dies. Fewer wallers now, but the trap is untouched.
+4. **T2.b** — retune `SHAPE_D_SCALE` / gating to require deep specialization.
+5. Cosmetic: `CCE_COLORS` has no entries for the five new verbs, so marks read as pale and near-identical across colonies; mark size (0.006–0.014) vs cell spacing (0.031) makes them speckle. The bible's "Red Painting" ECB needs both.
+6. Still parked: dilution/blending, the server/LLM/MP spine, NS stubs, `build` chant alias, multi-word chant parsing.
