@@ -82,8 +82,10 @@ var wall_banners = []  # [{cell: Vector2i, colony: int, ticks_remaining: int, th
 # carries the inverse ref in dot_data as "perched_by".
 var wall_perch = {}
 
-# Per-colony population cap (testing aid)
-const MAX_POPULATION_PER_COLONY = 1000
+# Per-colony population cap (testing aid). Lowered from 1000 for the 10-colony field: at
+# 1000 the ceiling was 10,000 dots, and combined with uncapped marks the run hit ~32k scene
+# objects and stalled. 500 keeps a 5,000-dot ceiling while preserving the relative dynamics.
+const MAX_POPULATION_PER_COLONY = 500
 var colony_counts = {}  # colony_id -> current dot count
 
 # Blocks (separate from population)
@@ -119,67 +121,87 @@ const TEST_MODE = false
 const TEST_POPULATION = 15
 
 # --- Multi-colony playtest field -------------------------------------------------
-# TEST HARNESS, NOT GAMEPLAY. Replaces the 2-colony (player + enemy) spawn with five
-# seeded colonies, each carrying a standing "lean" re-applied every AUTOCHANT_INTERVAL
-# ticks so its CCE climbs as the run progresses.
+# TEST HARNESS, NOT GAMEPLAY. Replaces the 2-colony spawn with TEN colonies spread evenly
+# over the whole sphere (Fibonacci placement). Eight are FOCUSED specialists (one primary
+# primitive each) and two are GENERALISTS. Every colony also carries a small "bit of
+# everything" floor (FIELD_BASE_BIT), because a move-only colony is not worth testing.
 #
-# The lean is pushed through the REAL _apply_recipe path \u2014 same {motion, action, dials}
-# recipe shape, same soul multiplier, same pool draw \u2014 so what the run shows is the
-# shipped mechanic under load, not a synthetic poke at the numbers. In actual play CCE
-# rises only from player chants; this stands in for five players chanting their culture.
+# Each colony re-chants a "lean" every AUTOCHANT_INTERVAL ticks through the REAL _apply_recipe
+# path (same soul multiplier + pool draw), so CCE deepens as the run progresses. Focused
+# colonies pump their primary. Generalists stay neutral until AUTOCHANT_COMBAT_TICK, then
+# HALF pivot to chanting attack and HALF to defence — standing in for combat breaking out.
 # Set TEST_FIELD = false to restore the shipped player-vs-enemy spawn exactly.
 const TEST_FIELD = true
-const TEST_FIELD_RADIUS_DEG = 30.0   # colonies sit evenly spaced on a small circle of this angular radius
-const TEST_FIELD_REVEAL_ALL = true   # bypass fog so all five are observable from tick 0
-const TEST_FIELD_SEED_POP = 8        # dots each colony starts with (founder + neighbours).
-									 # >1 on purpose: a lone founder can age out or lose a
-									 # coin-flip fight before it ever reproduces, and one
-									 # colony dying to spawn RNG invalidates the comparison.
-const AUTOCHANT_INTERVAL = 5         # ticks between lean applications
-const LEAN = 0.02                    # per-application CCE delta, BEFORE the soul multiplier
+const TEST_FIELD_REVEAL_ALL = true    # bypass fog so all ten are observable from tick 0
+const TEST_FIELD_DISCRETE_COLORS = true  # colour dots by colony (see COLONY_PALETTE) instead of
+										 # by CCE tint, so specs are told apart at a glance. The CCE
+										 # colouring in _update_dot_color is untouched and returns
+										 # when this is false.
+const TEST_FIELD_SEED_POP = 8         # dots each colony starts with (founder + neighbours);
+										 # >1 so a colony can't die to spawn RNG before reproducing.
+const AUTOCHANT_INTERVAL = 5          # ticks between lean applications
+const AUTOCHANT_COMBAT_TICK = 50      # generalists switch to their combat lean at/after this tick
+const LEAN = 0.02                     # per-application CCE delta, BEFORE the soul multiplier
+const FIELD_BASE_BIT = 0.06           # "a bit of everything" floor in every primitive
 
-# Shared floor every field colony starts from; per-colony "start" values override it.
+# Discrete colony colours for test runs. Index == colony id. Kept separate from CCE_COLORS
+# (which drives the real, CCE-dependent tint) so the two schemes never collide.
+const COLONY_PALETTE = [
+	{ "name": "red",     "color": Color(0.90, 0.15, 0.15) },
+	{ "name": "orange",  "color": Color(0.95, 0.55, 0.10) },
+	{ "name": "yellow",  "color": Color(0.90, 0.85, 0.15) },
+	{ "name": "lime",    "color": Color(0.55, 0.85, 0.20) },
+	{ "name": "green",   "color": Color(0.15, 0.75, 0.35) },
+	{ "name": "cyan",    "color": Color(0.15, 0.80, 0.80) },
+	{ "name": "blue",    "color": Color(0.25, 0.45, 0.95) },
+	{ "name": "purple",  "color": Color(0.55, 0.30, 0.90) },
+	{ "name": "magenta", "color": Color(0.90, 0.25, 0.75) },
+	{ "name": "white",   "color": Color(0.92, 0.92, 0.92) },
+]
+
+# Generalist combat leans, applied from AUTOCHANT_COMBAT_TICK. Each co-raises observe because
+# both attack and defend are observe-gated (no sighting -> no engagement); the defend lean also
+# raises build because Shape D walling probability is defend * colony_avg_build (no build -> no wall).
+const GENERALIST_ATTACK_LEAN = { "action": { "attack": LEAN, "observe": LEAN * 0.5 } }
+const GENERALIST_DEFEND_LEAN = { "action": { "defend": LEAN, "build": LEAN * 0.5, "observe": LEAN * 0.5 } }
+
+# Shared floor every field colony starts from; a colony's own "start" overrides per key.
 const TEST_FIELD_BASE = {
-	"motion": { "move": 0.25 },
-	"action": { "reproduce": 0.30, "observe": 0.10, "defend": 0.10 }
+	"motion": { "move": FIELD_BASE_BIT, "cluster": FIELD_BASE_BIT, "spread": FIELD_BASE_BIT, "spiral_path": FIELD_BASE_BIT, "face_target": FIELD_BASE_BIT },
+	"action": { "mark_surface": FIELD_BASE_BIT, "build": FIELD_BASE_BIT, "gather": FIELD_BASE_BIT, "defend": FIELD_BASE_BIT, "attack": FIELD_BASE_BIT, "reproduce": 0.25, "observe": 0.12 }
 }
 
-# Index in this array IS the colony id, so entry 0 is LOCAL_COLONY (the camera's home).
+# Index IS the colony id (also indexes COLONY_PALETTE). Entry 0 is LOCAL_COLONY (camera home).
+# 0-7 FOCUSED specialists (primary spiked in start, pumped by lean); 8-9 GENERALISTS (broad
+# blend, neutral lean until AUTOCHANT_COMBAT_TICK, then combat_role decides attack vs defend).
+# All 11 primitives are represented: 8 as specialists, attack+defend via the generalist split,
+# reproduce as the shared baseline.
 const TEST_FIELD_COLONIES = [
+	{ "name": "movers",     "start": { "motion": { "move": 0.35 } },        "lean": { "motion": { "move": LEAN } } },
+	{ "name": "clusterers", "start": { "motion": { "cluster": 0.35 } },     "lean": { "motion": { "cluster": LEAN } } },
+	{ "name": "spreaders",  "start": { "motion": { "spread": 0.35 } },      "lean": { "motion": { "spread": LEAN } } },
+	{ "name": "spiralers",  "start": { "motion": { "spiral_path": 0.35 } }, "lean": { "motion": { "spiral_path": LEAN } } },
+	{ "name": "facers",     "start": { "motion": { "face_target": 0.35 } }, "lean": { "motion": { "face_target": LEAN } } },
+	{ "name": "markers",    "start": { "action": { "mark_surface": 0.35 } },"lean": { "action": { "mark_surface": LEAN } } },
+	{ "name": "builders",   "start": { "action": { "build": 0.35 } },       "lean": { "action": { "build": LEAN } } },
+	{ "name": "gatherers",  "start": { "action": { "gather": 0.35, "observe": 0.20 } }, "lean": { "action": { "gather": LEAN, "observe": LEAN * 0.5 } } },
 	{
-		"name": "builders",
-		"start": { "action": { "build": 0.30 } },
-		"lean":  { "action": { "build": LEAN } }
-	},
-	{
-		"name": "raiders",
-		"start": { "action": { "attack": 0.30 } },
-		"lean":  { "action": { "attack": LEAN } }
-	},
-	{
-		# gather co-raises observe \u2014 the speck->gather composite needs a live observation
-		# to consume, so gather weight without observe weight is inert (see OBSERVE_MOVE_MAP).
-		"name": "gatherer-builders",
-		"start": { "action": { "gather": 0.25, "build": 0.25, "observe": 0.20 } },
-		"lean":  { "action": { "gather": LEAN, "build": LEAN, "observe": LEAN * 0.5 } }
-	},
-	{
-		"name": "nomad-raiders",
-		"start": { "motion": { "move": 0.40 }, "action": { "attack": 0.25 } },
-		"lean":  { "motion": { "move": LEAN }, "action": { "attack": LEAN } }
-	},
-	{
-		# Equal weight across the whole vocabulary \u2014 the control colony, and the only one
-		# that exercises cluster / spread / spiral_path / face_target / mark_surface.
-		"name": "generalists",
+		"name": "warband",
+		"combat_role": "attack",
 		"start": {
-			"motion": { "move": 0.20, "cluster": 0.20, "spread": 0.20, "spiral_path": 0.20, "face_target": 0.20 },
-			"action": { "mark_surface": 0.20, "build": 0.20, "gather": 0.20, "defend": 0.20, "attack": 0.20, "reproduce": 0.20, "observe": 0.20 }
+			"motion": { "move": 0.15, "cluster": 0.12, "spread": 0.12, "spiral_path": 0.10, "face_target": 0.10 },
+			"action": { "mark_surface": 0.10, "build": 0.15, "gather": 0.12, "defend": 0.15, "attack": 0.15, "reproduce": 0.25, "observe": 0.15 }
 		},
-		"lean": {
-			"motion": { "move": LEAN, "cluster": LEAN, "spread": LEAN, "spiral_path": LEAN, "face_target": LEAN },
-			"action": { "mark_surface": LEAN, "build": LEAN, "gather": LEAN, "defend": LEAN, "attack": LEAN, "reproduce": LEAN, "observe": LEAN }
-		}
+		"lean": { "motion": { "move": LEAN }, "action": { "reproduce": LEAN, "observe": LEAN * 0.5 } }
+	},
+	{
+		"name": "bulwark",
+		"combat_role": "defend",
+		"start": {
+			"motion": { "move": 0.15, "cluster": 0.12, "spread": 0.12, "spiral_path": 0.10, "face_target": 0.10 },
+			"action": { "mark_surface": 0.10, "build": 0.15, "gather": 0.12, "defend": 0.15, "attack": 0.15, "reproduce": 0.25, "observe": 0.15 }
+		},
+		"lean": { "motion": { "move": LEAN }, "action": { "reproduce": LEAN, "observe": LEAN * 0.5 } }
 	}
 ]
 # Logging \u2014 independent of TEST_MODE so we can log organic runs too
@@ -199,7 +221,15 @@ const DEFEND_STEP = 0.01
 const DOT_SURFACE_OFFSET = 0.0075
 const PARALLEL_EPSILON = 0.0001
 const MAX_CCE_FOR_SATURATION = 1.5
-const SPECK_SPAWN_CHANCE = 0.5         # per-tick probability a speck spawns
+# Soul supply. Specks stay scattered uniformly across the surface (bible §16), but at ~10x
+# the old ~0.5/tick — at the previous rate a gatherer colony's whole territory held only ~3
+# specks at once for hundreds of dots to chase, so directed gather lost to incidental
+# wandering (run 1785006498: dedicated gatherers peaked at soul 1, nomad-raiders who only
+# wander peaked at 5). Denser scatter puts enough in observe range for gather to actually
+# feed the pool. SPECK_MAX caps the field because specks do NOT decay — only collection
+# removes them — so an uncapped faucet would accumulate without bound before collection ramps.
+const SPECK_SPAWN_PER_TICK = 5         # specks spawned per tick (uniformly random cells)
+const SPECK_MAX = 1500                 # surface-saturation cap (~3.75% of cells); spawning pauses at the cap
 const REPRODUCE_CHANCE_MIN = 0.1       # reproduce probability at intensity 0
 const REPRODUCE_CHANCE_MAX = 0.9       # reproduce probability at intensity 1
 const MOVE_NUDGE_MIN = 0.01            # undirected-drift nudge at range_val 0
@@ -215,6 +245,11 @@ const MARK_TTL_MIN = 60               # ticks a mark persists at intensity 0
 const MARK_TTL_MAX = 400              # ...at intensity 1
 const MARK_SIZE_MIN = 0.006           # mark quad edge at intensity 0
 const MARK_SIZE_MAX = 0.014           # ...at intensity 1
+# Live-mark cap. Each mark is its own mesh and they persist for MARK_TTL ticks, so with a
+# large population all carrying baseline mark_surface they accumulate quadratically — a
+# 10-colony run hit 22,744 live marks (71% of all scene objects) and tanked the framerate.
+# At the cap, new marks are skipped until TTL expiry frees slots (same pattern as SPECK_MAX).
+const MARK_MAX = 2000
 
 const OBSERVE_BASE_RADIUS := 3
 const OBSERVE_SCALE := 20
@@ -600,18 +635,31 @@ func _tick_autochant() -> void:
 	for i in range(TEST_FIELD_COLONIES.size()):
 		if colony_counts.get(i, 0) <= 0:
 			continue
-		_apply_recipe(TEST_FIELD_COLONIES[i]["lean"], i)
+		var spec = TEST_FIELD_COLONIES[i]
+		var lean = spec["lean"]
+		# Generalists (those carrying a combat_role) pivot from their neutral lean to a combat
+		# lean once the run reaches AUTOCHANT_COMBAT_TICK — half to attack, half to defence.
+		if spec.get("combat_role", "") != "" and _tick_num >= AUTOCHANT_COMBAT_TICK:
+			lean = GENERALIST_ATTACK_LEAN if spec["combat_role"] == "attack" else GENERALIST_DEFEND_LEAN
+		_apply_recipe(lean, i)
 
 func _update_hud():
 	if dots.is_empty():
 		hud.text = "dots: 0"
 		return
 	if TEST_FIELD:
-		var field_lines = []
+		var field_lines = ["t%d   (combat lean @ t%d)" % [_tick_num, AUTOCHANT_COMBAT_TICK]]
 		for i in range(TEST_FIELD_COLONIES.size()):
-			field_lines.append("c%d %-18s pop %4d  blk %4d  soul %4d" % [
-				i, TEST_FIELD_COLONIES[i]["name"],
-				colony_counts.get(i, 0), block_counts.get(i, 0), soul_pool.get(i, 0)
+			var spec = TEST_FIELD_COLONIES[i]
+			var color_name = COLONY_PALETTE[i]["name"] if i < COLONY_PALETTE.size() else "?"
+			# Tag the generalists with their combat role; uppercase once it's actually active.
+			var tag = ""
+			var role = spec.get("combat_role", "")
+			if role != "":
+				tag = ("[%s]" % role.to_upper()) if _tick_num >= AUTOCHANT_COMBAT_TICK else ("[%s@%d]" % [role, AUTOCHANT_COMBAT_TICK])
+			field_lines.append("c%d %-11s %-7s pop %4d blk %4d soul %4d %s" % [
+				i, spec["name"], color_name,
+				colony_counts.get(i, 0), block_counts.get(i, 0), soul_pool.get(i, 0), tag
 			])
 		hud.text = "\n".join(field_lines)
 		return
@@ -907,8 +955,26 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 			var mat = dot.material_override as StandardMaterial3D
 			var mark_color = mat.albedo_color if mat != null else Color(1, 1, 1)
 			_create_surface_mark(dot.position.normalized(), mark_color, intensity)
-		# gather has no match-case executor, but its CCE weight is NOT inert: it gates
-		# directed move via OBSERVE_MOVE_MAP (speck -> gather).
+		"gather":
+			# Directed soul-seeking. March toward the nearest speck this dot has observed;
+			# the ambient collect check at the end of _tick_dot picks it up on arrival, so
+			# this case only has to CLOSE DISTANCE, not re-implement collection.
+			# Previously gather had no executor at all - a gather roll did nothing, so the
+			# gatherer cultures burned ~21% of their ticks idle (2,529 wasted rolls last run)
+			# and soul never accumulated. gather's weight still ALSO gates move via
+			# OBSERVE_MOVE_MAP; both now close on the same observed speck - they just converge
+			# faster. With no speck in view, drift instead of idling so the dot ranges into
+			# fresh cells rather than only collecting specks that spawn on its own.
+			var pending = dot_data[dot]["pending_observe"]
+			var speck_obs = pending["speck"] if pending != null else null
+			if speck_obs != null:
+				_march_toward_dir(dot, dot.position.normalized(), speck_obs["pos"], dot_data[dot]["colony"])
+				pending["speck"] = null  # consumed; observe re-banks it on the next sighting
+			else:
+				var dir = dot.position.normalized()
+				var nudge = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val)
+				var tangent = dir.cross(Vector3(randf_range(-1,1), randf_range(-1,1), randf_range(-1,1))).normalized()
+				_place_dot_on_sphere(dot, (dir + tangent * nudge).normalized(), true)
 
 func _execute_attack(dot: Node3D, intensity: float):
 	var my_colony = dot_data[dot]["colony"]
@@ -1706,6 +1772,18 @@ func _update_dot_color(dot: Node3D):
 		mat.albedo_color = FOG_COLOR
 		mat.emission = FOG_EMISSION
 		return
+	# Test-run overlay: colour by colony identity, not CCE, so specs are told apart at a glance.
+	# Returns before the CCE/wall logic below, which is left fully intact for the flag-off path.
+	# Blocks (monuments AND wall segments) render a dimmed shade so structures read as darker
+	# than living dots of the same colony; wall-vs-monument distinction is sacrificed here but
+	# preserved in the CCE colour scheme.
+	if TEST_FIELD_DISCRETE_COLORS and colony < COLONY_PALETTE.size():
+		var cc = COLONY_PALETTE[colony]["color"]
+		if dot_data[dot].get("is_block", false):
+			cc = cc.darkened(0.45)
+		mat.albedo_color = cc
+		mat.emission = cc
+		return
 	# Fence segments render a fixed distinct colour (after fog, so hidden colonies still fog),
 	# rather than the CCE mix — otherwise they'd be identical to defend-blue monument blocks.
 	if dot_data[dot].get("is_wall", false):
@@ -2000,20 +2078,18 @@ func _make_field_cce(spec: Dictionary) -> Dictionary:
 	return cce
 
 func _spawn_test_field():
-	# Five founders evenly spaced on a small circle of TEST_FIELD_RADIUS_DEG around a random
-	# centre — symmetric, so no colony starts with a positional advantage, and close enough
-	# that borders meet as populations grow rather than never touching.
-	var seed_angle = randf() * TAU
-	var center = Vector3(sin(seed_angle), 0.0, cos(seed_angle)).normalized()
-	var up = Vector3.UP if abs(center.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
-	var tangent = center.cross(up).normalized()
-	var bitangent = center.cross(tangent).normalized()
-	var r = deg_to_rad(TEST_FIELD_RADIUS_DEG)
+	# Founders spread evenly over the WHOLE sphere via a Fibonacci (golden-spiral) lattice —
+	# the standard way to scatter N points on a sphere near-uniformly, so no colony is crowded
+	# or isolated and each has room to grow before borders meet. A random rotation offset keeps
+	# runs from being identical. (Was a small shared circle when the field held five colonies.)
 	var n = TEST_FIELD_COLONIES.size()
+	var golden = PI * (3.0 - sqrt(5.0))
+	var phase = randf() * TAU
 	for i in range(n):
-		var theta = TAU * float(i) / float(n)
-		var offset = (tangent * cos(theta) + bitangent * sin(theta)) * sin(r)
-		var dir = (center * cos(r) + offset).normalized()
+		var y = 1.0 - (float(i) / float(max(1, n - 1))) * 2.0   # +1 (north) down to -1 (south)
+		var r_xz = sqrt(max(0.0, 1.0 - y * y))
+		var theta = golden * float(i) + phase
+		var dir = Vector3(cos(theta) * r_xz, y, sin(theta) * r_xz).normalized()
 		var spec = TEST_FIELD_COLONIES[i]
 		var preset = _make_field_cce(spec)
 		var founder = _create_dot(dir, null, i, preset)
@@ -2038,8 +2114,8 @@ func _spawn_test_field():
 				continue
 			_create_dot(sdir, null, i, preset)
 			seeded += 1
-		_telemetry({ "type": "field_colony", "colony": i, "name": spec["name"], "pop": seeded, "lean": spec["lean"] })
-		print("[field] c%d '%s' founded with %d dots" % [i, spec["name"], seeded])
+		_telemetry({ "type": "field_colony", "colony": i, "name": spec["name"], "pop": seeded, "lean": spec["lean"], "color": COLONY_PALETTE[i]["name"] if i < COLONY_PALETTE.size() else "?", "combat_role": spec.get("combat_role", "") })
+		print("[field] c%d '%s' (%s) founded with %d dots" % [i, spec["name"], COLONY_PALETTE[i]["name"] if i < COLONY_PALETTE.size() else "?", seeded])
 	if TEST_FIELD_REVEAL_ALL:
 		_update_all_dot_colors()
 	_focus_on_colony()
@@ -2192,12 +2268,17 @@ func _create_speck(dir: Vector3) -> void:
 	specks.append(speck)
 
 func _tick_specks() -> void:
-	if randf() < SPECK_SPAWN_CHANCE:
+	for _i in range(SPECK_SPAWN_PER_TICK):
+		if specks.size() >= SPECK_MAX:
+			break
 		_create_speck(_cell_to_dir(Vector2i(randi() % GRID_RES, randi() % GRID_RES)))
 
 # mark_surface output: a flat coloured quad flush on the surface, just under the dots. Size
 # and lifespan scale with the intensity dial. Marks decay by TTL (see _tick_surface_marks).
 func _create_surface_mark(dir: Vector3, color: Color, intensity: float) -> void:
+	# Perf cap: skip when the field is saturated; TTL expiry (_tick_surface_marks) frees slots.
+	if surface_marks.size() >= MARK_MAX:
+		return
 	var mark = MeshInstance3D.new()
 	var quad = BoxMesh.new()
 	var s = lerp(MARK_SIZE_MIN, MARK_SIZE_MAX, intensity)
