@@ -2091,3 +2091,178 @@ Also: generalists still wall on 89% of sightings — the clamp stops `prob > 1` 
 4. **T2.b** — retune `SHAPE_D_SCALE` / gating to require deep specialization.
 5. Cosmetic: `CCE_COLORS` has no entries for the five new verbs, so marks read as pale and near-identical across colonies; mark size (0.006–0.014) vs cell spacing (0.031) makes them speckle. The bible's "Red Painting" ECB needs both.
 6. Still parked: dilution/blending, the server/LLM/MP spine, NS stubs, `build` chant alias, multi-word chant parsing.
+
+---
+
+## 2026-07-25 — SOUL FLOWS: gather made real, 10x speck supply; 10-colony field; combat defense traced; perf caps. **Hydration entry — start here.**
+
+Continues 2026-07-24. That entry's "Next" list led here. Two commits this session on top of `19fb29e`:
+- `19fb29e` (prior session) — soul multiplier + Tier 1 recipes + 5-colony field + frontier walling + mark fix.
+- `2c1bcd4` (this session) — real gather, 10x speck supply, 10-colony field, perf caps.
+
+### THE HEADLINE: soul finally does something
+
+Across the prior runs soul flatlined (peak pool 1-5, chant multiplier stuck at ~1.0x), so S.c was unverified. This session's last run (10 colonies) hit **peak soul 25 and multiplier up to 1.80x**, clearly differentiated across colonies. The soul-weighted-chant mechanic (S.c) is now demonstrably live. It took three fixes to get there — gather, supply, and enough population — plus a perf cap to make the run survivable.
+
+### Fix 1 — gather was a NO-OP verb; now it seeks specks
+
+`gather` had no case in `_execute_primitive` — it only gated directed move via `OBSERVE_MOVE_MAP`. So a `gather` roll did nothing (2,529 wasted ticks in one prior run, ~21% of the gatherer colony's activity). Added an executor: a `gather` roll now marches toward the nearest speck the dot has observed (reusing `_march_toward_dir`), clears the consumed speck slot, and lets the existing ambient collect-check credit soul on arrival. With no speck in view it drifts instead of idling. Collection accounting untouched — gather only closes distance.
+
+### Fix 2 — speck supply was starving the faucet
+
+Even with gather working, an early run showed specks piling up UNCOLLECTED (0->135, collection in only 18/344 tick-intervals). Root cause: specks spawned uniformly over 40,000 cells while colonies occupy tiny regions, so a gatherer's whole territory held ~3 specks for hundreds of dots. **Damning proof:** the nomad-raiders (30% move, ZERO gather weight) peaked at soul 5 — HIGHEST — while the dedicated gatherers (22% gather) peaked at 1 — LOWEST. Directed gathering lost to incidental wandering because there was nothing in observe range to gather.
+
+Dustan's call (from a 3-option fork: spawn-near-life / denser-scatter / hybrid): **denser scatter**. `SPECK_SPAWN_CHANCE = 0.5` -> `SPECK_SPAWN_PER_TICK = 5` (~10x), still uniform (bible §16 faithful). Added `SPECK_MAX = 1500` because specks do NOT decay — only collection removes them — so an uncapped faucet accumulates without bound.
+
+### Fix 3 — 10-colony playtest field (was 5)
+
+Rebuilt `TEST_FIELD` per Dustan's spec:
+- **10 colonies, spread over the whole sphere** via a Fibonacci (golden-spiral) lattice + random phase (was a shared 30-deg circle).
+- **8 FOCUSED specialists** (movers, clusterers, spreaders, spiralers, facers, markers, builders, gatherers — one primary primitive each, spiked to 0.35 in `start`, pumped by `lean`) + **2 GENERALISTS** (warband, bulwark — broad motion+action blend).
+- All 11 primitives represented: 8 as specialists, attack+defend via the generalist split, reproduce as the shared floor. Every colony carries `FIELD_BASE_BIT = 0.06` in every primitive ("a bit of everything").
+- **Combat split:** at `AUTOCHANT_COMBAT_TICK = 50` the generalists pivot their lean — warband -> attack (+observe), bulwark -> defend (+build +observe). The +observe/+build are load-bearing: attack and defend are observe-gated, and Shape D walling is `defend x avg_build`, so a pure lean would be inert. Verified firing correctly in the run.
+- **Discrete colony colours** via `TEST_FIELD_DISCRETE_COLORS = true` + `COLONY_PALETTE` (10 named hues, index == colony id); blocks render a dimmed shade. The CCE-tint code in `_update_dot_color` is fully intact and returns when the flag is false. HUD lists all 10 with spec name, colour, pop/blk/soul, and a `[ATK]`/`[DEF]` tag on the generalists. `field_colony` telemetry now carries colour + combat_role.
+
+`_apply_recipe(recipe, colony)` already generalized last session; `_tick_autochant` now selects the combat lean per role past tick 50.
+
+⚠️ `TEST_FIELD = true` and `TEST_FIELD_DISCRETE_COLORS = true` are both committed ON. Flip to restore shipped spawn / CCE colouring.
+
+### Fix 4 — PERF: marks were the killer
+
+The 10-colony run stalled. Object growth at tick 143: 6,250 dots, 2,552 blocks, 316 specks, **22,744 marks** (71% of ~32k total). Marks grow QUADRATICALLY — every dot carries baseline `mark_surface` and marks persist 60-400 ticks, so they pile up far faster than they expire. Fixes: `MARK_MAX = 2000` (skip-when-full, same pattern as SPECK_MAX) and `MAX_POPULATION_PER_COLONY` 1000 -> 500 (10-colony ceiling was 10,000 dots). New object ceiling ~10k vs the ~32k that stalled.
+
+### FINDINGS worth carrying
+
+1. **Soul-via-wandering beats gather.** Movers (red, no gather weight) LED soul at 25; gatherers (purple) got 15. Incidental collection scales with movement volume, so the wandering colony out-collects the specialist gatherers. **`gather` still doesn't earn its specialization** — ties to the softmax-flatness point below. A real design wrinkle; not yet addressed.
+
+2. **Combat: defenders can win but almost never do.** Traced `_tick_combat_clusters`: resolution is `if a_power >= d_power: defender dies`, where BOTH sides' power = `attack + defend`. So a defender survives only if `defender.(attack+defend) > attacker.(attack+defend)`, ties to attacker. Empirically defender-win rate was 8.6% then 0% then near-0. Because the deciding stat rewards `attack` (the half aggressors max) and blocks are fixed at 0.5 power, **defense is structurally underpowered** — a dot rolling defend invests in the smaller half of a sum the attacker dominates. This is the mechanical root of aggression dominance and is a DESIGN CALL, still open. It is the natural next topic ("can defense actually defend?").
+
+3. **Softmax flatness caps specialization AND the soul multiplier** (T2.c). Selection is `exp(weight/SELECTION_TEMPERATURE)` at T=1.0; over 11 nonzero verbs a saturated primary (1.0) still only fires ~20% vs ~8% baseline. So specialists look muddy and a 5x soul chant delta buys a modest behavioural shift. `SELECTION_TEMPERATURE` is the lever (lower = sharper); left at 1.0 (unchanged, shipped). Likely the first knob to turn once we want crisp specialization or a punchier pivot.
+
+### Still open / parked
+
+- **Combat defense balance** (finding 2) — the live next fork for the anti-aggression goal.
+- **Soul pressure fork** (what makes LOW soul actually hurt): dilution (bible-native, currently OFF via `full_inheritance=true`) vs. a sustain cost. Deferred pending "does soul flow" — now answered yes, so this is live again.
+- gather not earning its keep (finding 1); softmax temperature (finding 3).
+- Blocks are the remaining uncapped growth term (decay-bounded only) — next perf lever if needed.
+- Parked from before: dilution/blending, server/LLM/MP spine, NS stubs, `build` chant alias, multi-word chant parsing, `CCE_COLORS` for the five new verbs.
+
+### Git
+
+`2c1bcd4` pushed to `session/2026-07-24-soul-recipes-field`. `main` still at `860d53e`. This DEVNOTES entry is uncommitted at time of writing.
+
+---
+
+## 2026-07-25 (cont.) — NS SOURCE READ; selection model resolved (linear now); three-tier build roadmap set. **Hydration entry — start here.**
+
+Dustan surfaced the North Star source itself: `procedural_civ_primitives_report` (a 2026-05-28 "Design-Facing Anthropology and Game-Systems Report", NOT in the repo — it lives in Downloads). Context he gave: the project steered AWAY from the NS earlier because it was too confusing to see a way forward, not because it was wrong. He likes what it proposes; we kept getting mired in the formula.
+
+### The decisive finding: the softmax is over RECIPES, not verbs
+
+NS §11: `P(r) = softmax(A_action + M_mode + T_motif + S_am + S_at + S_mt + C_chant + E_env + H_history)` where **`r = action + mode + motif`** — a composite three-tier recipe. Softmax is correct THERE: nine live terms, wide signed score range, negative synergies. It operates one tier ABOVE primitive selection.
+
+**The code grafted that softmax onto the bible's SIMPLIFIED space** — `exp(score/T)` over bare Tier 1 weights in [0,1] with only `A` live. Faithful to NEITHER doc. Softmax on a tiny non-negative range with 8 dead terms only COMPRESSES:
+- saturated specialist fires primary 20.4% (softmax) vs 62.5% (linear);
+- a weight-0.10 verb fires 19.8% (softmax) vs 7.7% (linear) — softmax over-represents low weights, so "a bit of everything" floods behaviour;
+- a chant doubling a weight (0.4->0.8) buys 1.5x (softmax) vs 2x (linear).
+This is the root of BOTH the muddy-specialists problem and the throttled soul pivot (S.c).
+
+**Bible §5.1 SUPERSEDES the NS here:** "chosen probabilistically from the combined motion and action weight pool" = plain LINEAR weighted pick over primitives. The bible deliberately collapsed the NS recipe-softmax into a pool roulette.
+
+**The 8 dormant score terms are NOT junk** (earlier "non-core scaffolding" call was half-wrong). They are the Tier 2/3 model (modes, motifs, environment, history) waiting for inputs that do not exist yet. Zero because modes/motifs aren't built — not because they're wrong.
+
+### The reframe that unblocked the whole thing
+
+The NS is NOT a formula to implement. It is three tiers to enrich, and crude versions of all three already exist. The softmax is the CAPSTONE that ties them together once each is worth combining — built LAST, not first. Earlier stalls came from starting at the 9-term formula (needs modes+motifs+environment+history all at once) instead of the tiers.
+
+| Tier | NS term | plain meaning | exists today |
+|---|---|---|---|
+| 1 | Verbs | WHAT a dot does | done (per-tick primitive selection) |
+| 2 | Modes | HOW / in what style | partial — the DIALS (range/intensity/frequency/affinity) are the raw material for named modes |
+| 3 | Motifs | the LASTING anchor | partial — monuments + walls are physical proto-motifs, not yet remembered/fed back |
+
+### THE ROADMAP (now in RECONCILIATION.md T2.c section)
+
+1. **Linear selection — SHIPPING THIS SESSION.** Finish solid Tier 1 ground: a dot does one clear thing, specialists specialize, soul pivot works.
+2. **Give Tier 2 a name.** A "mode" = a named bundle of dial settings + a verb lean ("fierce" = high intensity + low range + attack-lean). Start with ONE, watch it, add more.
+3. **Let Tier 3 remember.** Monuments exist physically; wire the feedback (a colony that built a great monument keeps valuing building near it). One motif, one loop.
+4. **Capstone.** With verbs + a few modes + a motif live, the NS softmax over action+mode+motif earns its place — flip `SELECTION_SOFTMAX = true`, activate the score terms. Built last, reads as obvious.
+
+Discipline recorded: never build the capstone directly; build the three understandable things and the confusing part becomes the easy last step. If Claude starts reaching for the full formula before the tiers are ready, Dustan calls it and Claude pulls back.
+
+### SHIPPED this session — step 1: linear Tier 1 selection
+
+`_tick_dot`: added `const SELECTION_SOFTMAX = false`. When false (now), `w = score` — plain linear weighted-pool roulette (bible §5.1). When true, the old `exp(score / SELECTION_TEMPERATURE)` path (the NS recipe-tier model, reserved for the capstone). Linear is valid precisely because we are Tier-1-only, where `score == a non-negative weight`; the softmax path returns when score terms can go signed. `SELECTION_TEMPERATURE` retained for that path. Validates clean.
+
+Prediction to check on the next run: specialists separate hard — the movers' `move` share should jump from ~20% toward ~60%, and soul-multiplier chants should bite roughly 2x harder per doubling. Behavioural consequence Dustan signed off on: a strongly-chanted dot goes near-deterministic (primary ~90%); variety comes from DIFFERENT dots holding DIFFERENT profiles, not from each dot being a dice roll (bible: "expressing one aspect of its culture at a time").
+
+### Also this session (earlier turns, already logged in the prior entry)
+
+Soul flows now (gather executor + 10x speck supply); 10-colony field with discrete colours + tick-50 attack/defend generalist split; perf caps (MARK_MAX, pop 500). Commit `2c1bcd4`. Combat-defense-is-underpowered finding still open. `mark_surface`->roads (Tier 3 motif from Tier 1 move) parked per Dustan — a good instinct that also thins the selection pool; do NOT implement yet.
+
+### Next
+
+- Run the linear build; confirm specialists separate and the soul pivot sharpens.
+- Then Tier 2 step: name the first mode (built on existing dials).
+- Still open: combat-defense balance; soul-pressure fork (dilution vs sustain); block-growth perf; DEVNOTES/RECON commits.
+
+---
+
+## 2026-07-25 (cont. 2) — CANON CALL: Tier 1 collapse. cluster/spread/face_target/spiral -> move-modes; mark -> build/move motif.
+
+Dustan's design call, recorded as **RECONCILIATION T1.e** (supersedes bible §5.1 motion list -> v0.5):
+- `cluster`, `spread`, `face_target`, `spiral_path` are **modes of `move`** (cohesion / dispersion / confrontation / spiral — HOW a dot moves), not verbs.
+- `mark_surface` is a **motif of TWO parents**: ornamentation on `build` (decorated monuments) AND paths/roads from `move`. A trace those verbs leave, never a per-tick verb.
+- **New Tier 1 (7 verbs):** move, gather, build, defend, attack, reproduce, observe. Motion layer collapses to just `move`.
+
+This is roadmap step 2 (modes) + step 3 (motifs) arriving bottom-up, and it compounds the linear-selection win (fewer top-level pool competitors -> sharper specialization).
+
+**The design question it hinges on (open, needs sign-off before code):** a single scalar `affinity` dial can't encode the four modes (toward-allies vs toward-enemies vs tangential aren't one axis). So modes = a small **move-internal layer** — named-mode weights (cohesion/dispersion/spiral/confront) consulted WHEN move fires, fed by CCE, not in the top-level verb pool. This is the first real instance of the NS recipe `r = action + mode` (move + mode) — the capstone architecture arriving one tier at a time.
+
+**Build order (no behaviour lost at any step), also in T1.e:**
+1. Build the move-mode layer + `move` reading it (reuse existing `_local_ally_center` / spiral-tangent / `_face_dir` executors as the mode bodies).
+2. Remove cluster/spread/face_target/spiral_path from Tier 1 vocab + selection; repoint their chant words to set move-mode weights; retire the `spiral` dial.
+3. mark -> motif: remove `mark_surface` as a verb; re-express as build-ornamentation + move-road traces (Tier 3, later).
+Field harness updates (clusterers/markers colonies become mode/motif tests).
+
+**NOT YET IMPLEMENTED** — recorded + planned only. Waiting on the mode-layer representation sign-off. No code touched this turn.
+
+---
+
+## 2026-07-25 (cont. 3) — SHIPPED: Tier 1 collapse steps 1-2 (move-mode layer). spiral kept as a verb.
+
+Implemented RECONCILIATION T1.e build-order steps 1-2 (mark/step 3 deferred to Tier 3).
+
+**New Tier 1 (7 verbs):** move, gather, build, defend, attack, reproduce, observe — plus **spiral_path kept as a verb** (Dustan: a spiral is a self-contained path, not a relational bias). mark_surface still a verb pending the Tier 3 motif work.
+
+**Move-mode layer** (`cce["modes"]` = cohesion / dispersion / confront):
+- NOT in the top-level selection pool. `move` fires (top level), then `_pick_move_mode(modes)` does a per-fire LINEAR roulette over the mode weights + a `MOVE_DRIFT_BASE = 0.15` drift baseline, and the chosen mode steps: cohesion = toward `_local_ally_center`, dispersion = away from it, confront = advance on nearest foreign (`_find_nearest_foreign_in_radius` + `_face_dir` + march — a semantic upgrade from the old orientation-only face_target). Each falls back to `_drift` (the old bare-move body, spiral-dial aware) when its target is absent.
+- This is the first concrete NS recipe `r = action + mode` (move + mode) — the capstone architecture arriving bottom-up, exactly the roadmap.
+
+**Wiring touched:** NEUTRAL_CCE / COLONY0 / COLONY1 (modes layer added, cluster/spread/face_target removed from motion); `_apply_recipe` (modes branch); dilution loop (modes added); CHANT_RECIPES (cluster/huddle/…, spread/scatter/…, face/turn/confront/… now raise modes + a little move); TEST_FIELD_BASE + colony specs (clusterers→cohesive, spreaders→dispersive, facers→confront; spiralers kept); new `_move_mode_counts` telemetry (per-colony mode tally in the snapshot as `move_modes`). New helpers `_pick_move_mode`, `_drift`. `validate_script` clean.
+
+**Verify on next run:** the `move_modes` snapshot field should show the cohesive/dispersive/confront colonies firing their mode well above drift (confirming modes execute, not just fall back). Visually: cohesive clumps, dispersive spreads, confront advances on borders. `move` top-level share stays high for those three (mode is under move).
+
+**Deferred / next:** step 3 (mark → build-ornament + move-road motif) needs the Tier 3 feedback layer. Then Tier 2 proper (naming more modes) and eventually the capstone (SELECTION_SOFTMAX at the recipe tier).
+
+Uncommitted; part of the ongoing linear-selection + collapse work on the branch.
+
+---
+
+## 2026-07-25 (cont. 4) — Build nerf: a dot won't re-feed the same banner (build_banners_used wired).
+
+Goal (Dustan): a build-heavy colony shouldn't lock a dot onto one banner and tower it up forever.
+
+**Journey (recorded so it isn't re-derived):**
+1. First tried a per-dot build COOLDOWN (build excluded from the pool for N ticks after placing). Rejected by Dustan — it fizzles ticks and he wanted build to stay rollable.
+2. Final: wired the dormant `build_banners_used` scaffolding (existed since 2026-05-12, never written). On each banner placement, `dot_data[dot]["build_banners_used"][banner_id] = true`; `_find_eligible_build_banner` already skipped used ids. So a dot contributes to a monument ONCE, then finds another banner / founds its own / does something else — build stays fully in the pool, it just won't re-feed the same banner. One-line write; the field, initializer, and skip-check were all already there.
+
+**Run 1785076667 (434 ticks, long) — findings:**
+- **The nerf does what was asked, but it is NOT the lever for "builds and nothing else."** builders still fired build 53% and collapsed to 12 dots. Build DOMINANCE is driven by its CCE weight (build 0.35 start + autochant pumping), which the banner rule doesn't touch. To make builders actually do other things, lower its build CCE weight in the field config — noted, not done (Dustan: one run isn't enough to tune).
+- The nerf traded "few tall towers" for "many small monuments" — dots move off a used banner and hit the founder branch more. Visible oddity: cohesive (c1) built 1,360 blocks on only the 0.06 build baseline — cohesion clumps dots tightly and each founds its own small monument = dense monument field. Total blocks 6,374 (peaked 7,709 @t321, decay pulled it back). Every colony builds because all carry FIELD_BASE_BIT=0.06 build.
+- bulwark wiped to 0, builders to 12 — over-specialized/combat-losing colonies culled again (§13 flavor).
+- Perf held the whole 434 ticks (~13k objects peak); marks capped clean at 2,000.
+
+**Tuning levers noted for later (NOT pulled — needs more than one run):** builders' build CCE weight (dominance), FIELD_BASE_BIT build + BUILD_START_CHANCE (map-wide block volume), a BLOCK_MAX cap (blocks remain the one uncapped growth term).
+
+This commit banks the whole session stack: linear selection (T2.c), the Tier-1 move-mode collapse (T1.e, spiral kept), and this build nerf.

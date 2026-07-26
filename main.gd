@@ -33,13 +33,18 @@ const SOUL_CHANT_GAIN = 4.0        # max multiplier bonus above 1.0
 const SOUL_CHANT_HALF = 100.0      # soul at which half the bonus is reached
 const SOUL_CHANT_DRAW = 0.25       # fraction of the pool consumed per chant
 
-# Softmax temperature for primitive selection: P(r) proportional to exp(score / T).
-# 1.0 = the shipped behaviour, unchanged. LOWER values sharpen selection, so a CCE weight
-# lead buys a bigger firing-probability lead. Present as a tuning lever because the soul
-# multiplier's visible effect is capped by how flat this curve is: at T=1.0 a 0.9-vs-0.4
-# weight gap is only ~1.65x firing odds, so a big chant delta still reads as a small
-# behavioural change. Retune deliberately — it reshapes ALL primitive selection.
-const SELECTION_TEMPERATURE = 1.0
+# Primitive selection model. See RECONCILIATION.md T2.c + DEVNOTES 2026-07-25 (cont.).
+#   false (current) = LINEAR weighted pool — the bible §5.1 model: P(k) = weight_k / Σ weight.
+#                     This is Tier 1 selection. It is what makes specialists actually
+#                     specialise (a saturated primary fires ~62% not ~20%) and what makes the
+#                     soul multiplier bite proportionally.
+#   true  = the NS §11 softmax (exp(score / SELECTION_TEMPERATURE)). That model belongs one
+#           tier UP, over composite action+mode+motif RECIPES, and is reserved for the
+#           capstone once Tier 2 (modes) and Tier 3 (motifs) exist and the score terms below
+#           can go signed. Do not flip until then.
+# Linear is valid here precisely because we are Tier-1-only: score == a non-negative weight.
+const SELECTION_SOFTMAX = false
+const SELECTION_TEMPERATURE = 1.0    # only consulted on the softmax path (SELECTION_SOFTMAX = true)
 
 # Combat
 const COMBAT_TICKS = 3
@@ -167,7 +172,8 @@ const GENERALIST_DEFEND_LEAN = { "action": { "defend": LEAN, "build": LEAN * 0.5
 
 # Shared floor every field colony starts from; a colony's own "start" overrides per key.
 const TEST_FIELD_BASE = {
-	"motion": { "move": FIELD_BASE_BIT, "cluster": FIELD_BASE_BIT, "spread": FIELD_BASE_BIT, "spiral_path": FIELD_BASE_BIT, "face_target": FIELD_BASE_BIT },
+	"motion": { "move": FIELD_BASE_BIT, "spiral_path": FIELD_BASE_BIT },
+	"modes": { "cohesion": FIELD_BASE_BIT, "dispersion": FIELD_BASE_BIT, "confront": FIELD_BASE_BIT },
 	"action": { "mark_surface": FIELD_BASE_BIT, "build": FIELD_BASE_BIT, "gather": FIELD_BASE_BIT, "defend": FIELD_BASE_BIT, "attack": FIELD_BASE_BIT, "reproduce": 0.25, "observe": 0.12 }
 }
 
@@ -177,11 +183,13 @@ const TEST_FIELD_BASE = {
 # All 11 primitives are represented: 8 as specialists, attack+defend via the generalist split,
 # reproduce as the shared baseline.
 const TEST_FIELD_COLONIES = [
-	{ "name": "movers",     "start": { "motion": { "move": 0.35 } },        "lean": { "motion": { "move": LEAN } } },
-	{ "name": "clusterers", "start": { "motion": { "cluster": 0.35 } },     "lean": { "motion": { "cluster": LEAN } } },
-	{ "name": "spreaders",  "start": { "motion": { "spread": 0.35 } },      "lean": { "motion": { "spread": LEAN } } },
+	# 0-1 move + a mode (cohesion/dispersion) so the mode LAYER gets exercised; the ex-cluster/
+	# spread/facer colonies are now move-mode specialists. spiral stays a verb (spiralers).
+	{ "name": "movers",     "start": { "motion": { "move": 0.35 } }, "lean": { "motion": { "move": LEAN } } },
+	{ "name": "cohesive",   "start": { "motion": { "move": 0.30 }, "modes": { "cohesion": 0.35 } },   "lean": { "modes": { "cohesion": LEAN } } },
+	{ "name": "dispersive", "start": { "motion": { "move": 0.30 }, "modes": { "dispersion": 0.35 } }, "lean": { "modes": { "dispersion": LEAN } } },
 	{ "name": "spiralers",  "start": { "motion": { "spiral_path": 0.35 } }, "lean": { "motion": { "spiral_path": LEAN } } },
-	{ "name": "facers",     "start": { "motion": { "face_target": 0.35 } }, "lean": { "motion": { "face_target": LEAN } } },
+	{ "name": "confront",   "start": { "motion": { "move": 0.30 }, "modes": { "confront": 0.35 } },   "lean": { "modes": { "confront": LEAN } } },
 	{ "name": "markers",    "start": { "action": { "mark_surface": 0.35 } },"lean": { "action": { "mark_surface": LEAN } } },
 	{ "name": "builders",   "start": { "action": { "build": 0.35 } },       "lean": { "action": { "build": LEAN } } },
 	{ "name": "gatherers",  "start": { "action": { "gather": 0.35, "observe": 0.20 } }, "lean": { "action": { "gather": LEAN, "observe": LEAN * 0.5 } } },
@@ -189,7 +197,8 @@ const TEST_FIELD_COLONIES = [
 		"name": "warband",
 		"combat_role": "attack",
 		"start": {
-			"motion": { "move": 0.15, "cluster": 0.12, "spread": 0.12, "spiral_path": 0.10, "face_target": 0.10 },
+			"motion": { "move": 0.15, "spiral_path": 0.10 },
+			"modes": { "cohesion": 0.12, "dispersion": 0.12, "confront": 0.10 },
 			"action": { "mark_surface": 0.10, "build": 0.15, "gather": 0.12, "defend": 0.15, "attack": 0.15, "reproduce": 0.25, "observe": 0.15 }
 		},
 		"lean": { "motion": { "move": LEAN }, "action": { "reproduce": LEAN, "observe": LEAN * 0.5 } }
@@ -198,7 +207,8 @@ const TEST_FIELD_COLONIES = [
 		"name": "bulwark",
 		"combat_role": "defend",
 		"start": {
-			"motion": { "move": 0.15, "cluster": 0.12, "spread": 0.12, "spiral_path": 0.10, "face_target": 0.10 },
+			"motion": { "move": 0.15, "spiral_path": 0.10 },
+			"modes": { "cohesion": 0.12, "dispersion": 0.12, "confront": 0.10 },
 			"action": { "mark_surface": 0.10, "build": 0.15, "gather": 0.12, "defend": 0.15, "attack": 0.15, "reproduce": 0.25, "observe": 0.15 }
 		},
 		"lean": { "motion": { "move": LEAN }, "action": { "reproduce": LEAN, "observe": LEAN * 0.5 } }
@@ -234,6 +244,9 @@ const REPRODUCE_CHANCE_MIN = 0.1       # reproduce probability at intensity 0
 const REPRODUCE_CHANCE_MAX = 0.9       # reproduce probability at intensity 1
 const MOVE_NUDGE_MIN = 0.01            # undirected-drift nudge at range_val 0
 const MOVE_NUDGE_MAX = 0.08            # undirected-drift nudge at range_val 1
+# Baseline weight of plain drift in the move-mode roulette (T1.e). Gives a mode-less dot a
+# guaranteed drift and keeps even a mode-heavy dot from locking 100% into one bias.
+const MOVE_DRIFT_BASE = 0.15
 
 # Motion primitive tuning (cluster / spread / spiral_path / face_target)
 const COHESION_RADIUS_MIN = 2         # cells scanned for local same-colony neighbours at range 0
@@ -259,12 +272,12 @@ const OBSERVE_SCALE := 20
 const OBSERVE_MOVE_MAP = { "speck": "gather" }
 
 const NEUTRAL_CCE = {
+	# Tier 1 verbs. cluster/spread/face_target collapsed to move-MODES (see "modes" below,
+	# RECONCILIATION T1.e); mark_surface is a motif (deferred). spiral_path kept as a verb
+	# (a self-contained path, not a relational bias).
 	"motion": {
 		"move": 0.0,
-		"cluster": 0.0,
-		"spread": 0.0,
 		"spiral_path": 0.0,
-		"face_target": 0.0,
 	},
 	"action": {
 		# Reserved primitives \u2014 not yet wired, kept for forward compatibility
@@ -276,6 +289,14 @@ const NEUTRAL_CCE = {
 		"attack": 0.0,
 		"reproduce": 0.0,
 		"observe": 0.0
+	},
+	# Move-modes (Tier 2, T1.e): HOW a move fires. NOT in the top-level selection pool \u2014
+	# consulted only when `move` executes. cohesion=toward allies, dispersion=away from
+	# allies, confront=toward nearest enemy. Plain drift is the implicit default.
+	"modes": {
+		"cohesion": 0.0,
+		"dispersion": 0.0,
+		"confront": 0.0
 	},
 	"dials": {
 		"range": 0.5,
@@ -309,18 +330,20 @@ const CHANT_RECIPES = {
 	"coil":      { "motion": { "spiral_path": CHANT_WEIGHT }, "dials": { "spiral": 0.05 } },
 	"twist":     { "motion": { "spiral_path": CHANT_WEIGHT }, "dials": { "spiral": 0.05 } },
 	"whirl":     { "motion": { "spiral_path": CHANT_WEIGHT }, "dials": { "spiral": 0.05 } },
-	"cluster":   { "motion": { "cluster": CHANT_WEIGHT }, "dials": { "range": -0.05 } },
-	"huddle":    { "motion": { "cluster": CHANT_WEIGHT }, "dials": { "range": -0.05 } },
-	"together":  { "motion": { "cluster": CHANT_WEIGHT }, "dials": { "range": -0.05 } },
-	"flock":     { "motion": { "cluster": CHANT_WEIGHT }, "dials": { "range": -0.05 } },
-	"spread":    { "motion": { "spread": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
-	"scatter":   { "motion": { "spread": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
-	"disperse":  { "motion": { "spread": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
-	"apart":     { "motion": { "spread": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
-	"face":      { "motion": { "face_target": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
-	"turn":      { "motion": { "face_target": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
-	"confront":  { "motion": { "face_target": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
-	"stare":     { "motion": { "face_target": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	# These words now raise MOVE-MODES (T1.e), not standalone verbs. They co-raise `move` a
+	# touch so a colony chanted toward a mode actually moves enough to express it.
+	"cluster":   { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "cohesion": CHANT_WEIGHT }, "dials": { "range": -0.05 } },
+	"huddle":    { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "cohesion": CHANT_WEIGHT }, "dials": { "range": -0.05 } },
+	"together":  { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "cohesion": CHANT_WEIGHT }, "dials": { "range": -0.05 } },
+	"flock":     { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "cohesion": CHANT_WEIGHT }, "dials": { "range": -0.05 } },
+	"spread":    { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "dispersion": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	"scatter":   { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "dispersion": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	"disperse":  { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "dispersion": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	"apart":     { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "dispersion": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	"face":      { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "confront": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	"turn":      { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "confront": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	"confront":  { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "confront": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
+	"stare":     { "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "confront": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
 	"mark":      { "action": { "mark_surface": CHANT_WEIGHT }, "dials": { "intensity": 0.05 } },
 	"paint":     { "action": { "mark_surface": CHANT_WEIGHT }, "dials": { "intensity": 0.05 } },
 	"stain":     { "action": { "mark_surface": CHANT_WEIGHT }, "dials": { "intensity": 0.05 } },
@@ -363,12 +386,16 @@ var surface_marks = []  # [{node: MeshInstance3D, ticks_remaining: int}] — mar
 # Per-tick tally of primitives selected by LOCAL_COLONY dots. Reset at the top of each
 # tick's dot pass, read into the telemetry snapshot at the end of the same tick.
 var _primitive_counts = {}
+# Per-tick, per-colony tally of which move-MODE fired (cohesion/dispersion/confront/drift) —
+# the verification signal that a mode actually executed vs fell back to drift. Same lifecycle
+# as _primitive_counts (cleared each tick, read into the snapshot).
+var _move_mode_counts = {}
 # Live-dot record (see _create_dot):
 # dot_data[dot] = {
 #   "age": int,                 # ticks lived, dies at DOT_LIFETIME
 #   "cce": { "motion": {...}, "action": {...}, "dials": {...} },
 #   "colony": int,              # colony ID
-#   "build_banners_used": {},   # dormant: never written (see _find_eligible_build_banner)
+#   "build_banners_used": {},   # {banner_id: true} of banners this dot has built on (won't re-feed)
 #   "dot_id": int,              # stable id for logging
 #   "pending_observe": null,    # set by _execute_observe; consumed by move via OBSERVE_MOVE_MAP
 #   "collect_lock": null,       # set on speck-cell collision; resolved in _tick_all_dots
@@ -390,10 +417,7 @@ const FOG_EMISSION = Color(0.1, 0.1, 0.1)
 const COLONY1_CCE = {
 	"motion": {
 		"move": 0.40,
-		"cluster": 0.0,
-		"spread": 0.0,
 		"spiral_path": 0.0,
-		"face_target": 0.0,
 	},
 	"action": {
 		"mark_surface": 0.0,
@@ -404,6 +428,7 @@ const COLONY1_CCE = {
 		"reproduce": 0.32,
 		"observe": 0.1
 	},
+	"modes": { "cohesion": 0.0, "dispersion": 0.0, "confront": 0.0 },
 	"dials": {
 		"range": 0.5,
 		"intensity": 0.5,
@@ -414,10 +439,7 @@ const COLONY1_CCE = {
 const COLONY0_CCE = {
 	"motion": {
 		"move": 0.40,
-		"cluster": 0.0,
-		"spread": 0.0,
 		"spiral_path": 0.0,
-		"face_target": 0.0,
 	},
 	"action": {
 		"mark_surface": 0.0,
@@ -428,6 +450,7 @@ const COLONY0_CCE = {
 		"reproduce": 0.40,
 		"observe": 0.1
 	},
+	"modes": { "cohesion": 0.0, "dispersion": 0.0, "confront": 0.0 },
 	"dials": {
 		"range": 0.5,
 		"intensity": 0.5,
@@ -537,6 +560,7 @@ func _process(delta):
 		_tick_surface_marks()
 		_tick_autochant()
 		_primitive_counts.clear()
+		_move_mode_counts.clear()
 		_tick_all_dots()
 		_update_hud()
 		# Post-tick state snapshot (after all mutations resolve). Captures ALL colonies.
@@ -552,6 +576,7 @@ func _process(delta):
 				"revealed": revealed_colonies.keys(),
 				"specks": specks.size(),
 				"primitives": _primitive_counts.duplicate(true),
+				"move_modes": _move_mode_counts.duplicate(true),
 				"marks": surface_marks.size()
 			})
 
@@ -605,6 +630,10 @@ func _apply_recipe(recipe: Dictionary, colony: int = LOCAL_COLONY):
 			for key in recipe["action"]:
 				if cce["action"].has(key):
 					cce["action"][key] = clamp(cce["action"][key] + recipe["action"][key] * mult, 0.0, 1.0)
+		if recipe.has("modes"):
+			for key in recipe["modes"]:
+				if cce.has("modes") and cce["modes"].has(key):
+					cce["modes"][key] = clamp(cce["modes"][key] + recipe["modes"][key] * mult, 0.0, 1.0)
 		if recipe.has("dials"):
 			for key in recipe["dials"]:
 				if cce["dials"].has(key):
@@ -763,11 +792,12 @@ func _tick_dot(dot: Node3D):
 			pool[key] = cce["action"][key]
 	if pool.is_empty():
 		return
-	# North Star selection: P(r) = softmax(A + M + T + S_am + S_at + S_mt + C + E + H).
-	# Only A is live (binds to the current CCE weight, chant already folded in via
-	# _apply_recipe). The other eight terms are present-but-zero so each can be filled
-	# in later as a one-line change.
-	var weights = {}  # key -> exp(score)
+	# Selection score = A + M + T + S_am + S_at + S_mt + C + E + H (NS §11). Only A is live
+	# (the current CCE weight, chant already folded in via _apply_recipe); the other eight are
+	# the Tier 2/3 model, present-but-zero until modes/motifs exist. With only A live, score is
+	# just the weight. LINEAR (bible §5.1) turns that weight straight into a pool share; the
+	# softmax path is kept for the capstone tier (see the SELECTION_SOFTMAX const).
+	var weights = {}  # key -> selection weight
 	var total = 0.0
 	for key in pool:
 		var A = pool[key]   # action tendency (current CCE weight)
@@ -780,7 +810,7 @@ func _tick_dot(dot: Node3D):
 		var E = 0.0         # environment
 		var H = 0.0         # history
 		var score = A + M + T + S_am + S_at + S_mt + C + E + H
-		var w = exp(score / SELECTION_TEMPERATURE)
+		var w = exp(score / SELECTION_TEMPERATURE) if SELECTION_SOFTMAX else score
 		weights[key] = w
 		total += w
 	var roll = randf() * total
@@ -834,17 +864,46 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 					_march_toward_dir(dot, dot.position.normalized(), pending[best_key]["pos"], dot_data[dot]["colony"])
 					dot_data[dot]["pending_observe"] = null
 					return
-			var nudge_amount = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val)
+			# Move-MODE (T1.e): the relational biases that used to be their own verbs are now
+			# how `move` expresses. Pick one per fire (linear roulette weighted by the mode CCE,
+			# with an implicit drift baseline), then step accordingly.
 			var dir = dot.position.normalized()
-			var tangent: Vector3
-			if spiral > 0.1:
-				var up = Vector3.UP if abs(dir.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
-				tangent = dir.cross(up).normalized()
-				nudge_amount *= (1.0 + spiral)
-			else:
-				tangent = dir.cross(Vector3(randf_range(-1,1), randf_range(-1,1), randf_range(-1,1))).normalized()
-			var new_dir = (dir + tangent * nudge_amount).normalized()
-			_place_dot_on_sphere(dot, new_dir, true)
+			var my_colony = dot_data[dot]["colony"]
+			var modes = dot_data[dot]["cce"].get("modes", {})
+			var move_mode = _pick_move_mode(modes)
+			if not _move_mode_counts.has(my_colony):
+				_move_mode_counts[my_colony] = {}
+			_move_mode_counts[my_colony][move_mode] = _move_mode_counts[my_colony].get(move_mode, 0) + 1
+			match move_mode:
+				"cohesion":
+					# Toward the local same-colony centre of mass. No neighbours -> drift.
+					var radius = int(lerp(float(COHESION_RADIUS_MIN), float(COHESION_RADIUS_MAX), range_val))
+					var center = _local_ally_center(dir, my_colony, radius, dot)
+					if center != Vector3.ZERO:
+						_march_toward_dir(dot, dir, center, my_colony)
+					else:
+						_drift(dot, dir, range_val, spiral)
+				"dispersion":
+					# Away from the local centre of mass. No neighbours -> drift.
+					var radius2 = int(lerp(float(COHESION_RADIUS_MIN), float(COHESION_RADIUS_MAX), range_val))
+					var center2 = _local_ally_center(dir, my_colony, radius2, dot)
+					if center2 != Vector3.ZERO:
+						_march_toward_dir(dot, dir, (2.0 * dir - center2).normalized(), my_colony)
+					else:
+						_drift(dot, dir, range_val, spiral)
+				"confront":
+					# Advance on the nearest foreign dot (face + step toward). No target -> drift.
+					# Semantic shift from the old orientation-only face_target: as a MOVE mode a
+					# fire means movement, so confront closes distance rather than just turning.
+					var radius3 = int(lerp(float(FACE_SCAN_RADIUS_MIN), float(FACE_SCAN_RADIUS_MAX), range_val))
+					var tgt = _find_nearest_foreign_in_radius(dir, my_colony, radius3)
+					if tgt != null and dot_data.has(tgt):
+						_face_dir(dot, tgt.position.normalized())
+						_march_toward_dir(dot, dir, tgt.position.normalized(), my_colony)
+					else:
+						_drift(dot, dir, range_val, spiral)
+				_:
+					_drift(dot, dir, range_val, spiral)
 		"reproduce":
 			var chance = lerp(REPRODUCE_CHANCE_MIN, REPRODUCE_CHANCE_MAX, intensity)
 			if randf() < chance:
@@ -911,28 +970,6 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 			_execute_build(dot)
 		"observe":
 			_execute_observe(dot)
-		"cluster":
-			# Cohesion: step toward the local centre of mass of same-colony neighbours.
-			# With no neighbours in range, hold position. Radius widens with the range dial.
-			var dir = dot.position.normalized()
-			var radius = int(lerp(float(COHESION_RADIUS_MIN), float(COHESION_RADIUS_MAX), range_val))
-			var center = _local_ally_center(dir, dot_data[dot]["colony"], radius, dot)
-			if center != Vector3.ZERO:
-				_march_toward_dir(dot, dir, center, dot_data[dot]["colony"])
-		"spread":
-			# Separation: step away from the local same-colony centre of mass. With no
-			# neighbours, fall back to an undirected drift so lone dots still disperse.
-			var dir = dot.position.normalized()
-			var radius = int(lerp(float(COHESION_RADIUS_MIN), float(COHESION_RADIUS_MAX), range_val))
-			var center = _local_ally_center(dir, dot_data[dot]["colony"], radius, dot)
-			if center != Vector3.ZERO:
-				# Aim at the point on the far side of the dot from the centre = move away.
-				var away_target = (2.0 * dir - center).normalized()
-				_march_toward_dir(dot, dir, away_target, dot_data[dot]["colony"])
-			else:
-				var nudge = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val)
-				var tangent = dir.cross(Vector3(randf_range(-1,1), randf_range(-1,1), randf_range(-1,1))).normalized()
-				_place_dot_on_sphere(dot, (dir + tangent * nudge).normalized(), true)
 		"spiral_path":
 			# Dedicated spiral motion: a consistent great-circle-tangent step, amplified by
 			# the spiral dial. (Distinct from move's optional spiral bias.)
@@ -941,14 +978,6 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 			var tangent = dir.cross(up).normalized()
 			var nudge = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val) * (1.0 + spiral)
 			_place_dot_on_sphere(dot, (dir + tangent * nudge).normalized(), true)
-		"face_target":
-			# Orientation only, no movement: turn to face the nearest foreign dot in range.
-			# No target -> no-op. Scan radius widens with the range dial.
-			var dir = dot.position.normalized()
-			var radius = int(lerp(float(FACE_SCAN_RADIUS_MIN), float(FACE_SCAN_RADIUS_MAX), range_val))
-			var tgt = _find_nearest_foreign_in_radius(dir, dot_data[dot]["colony"], radius)
-			if tgt != null and dot_data.has(tgt):
-				_face_dir(dot, tgt.position.normalized())
 		"mark_surface":
 			# Leave a persistent mark at the dot's position, coloured by the dot's own CCE
 			# tint (so a red-tinted culture paints red). Permanence/size scale with intensity.
@@ -1051,6 +1080,41 @@ func _march_toward_dir(dot: Node3D, my_dir: Vector3, target_dir: Vector3, my_col
 	if not _is_foreign_in_exact_cell(new_dir, my_colony):
 		_place_dot_on_sphere(dot, new_dir)
 
+# --- Move modes (T1.e): the how-of-move layer that replaced cluster/spread/face_target ---
+
+func _pick_move_mode(modes: Dictionary) -> String:
+	# Linear roulette (matches top-level selection) over the relational modes plus an implicit
+	# "drift" baseline. A mode-less dot (all zero) always drifts; a mode-heavy dot mostly
+	# expresses that mode but still drifts occasionally via MOVE_DRIFT_BASE.
+	var pool = { "drift": MOVE_DRIFT_BASE }
+	for m in ["cohesion", "dispersion", "confront"]:
+		var w = modes.get(m, 0.0)
+		if w > 0.0:
+			pool[m] = w
+	var total = 0.0
+	for k in pool:
+		total += pool[k]
+	var roll = randf() * total
+	var cum = 0.0
+	for k in pool:
+		cum += pool[k]
+		if roll <= cum:
+			return k
+	return "drift"
+
+func _drift(dot: Node3D, dir: Vector3, range_val: float, spiral: float) -> void:
+	# Plain undirected move, with the optional spiral-dial bias. This is the body the old
+	# bare `move` case ran; the mode branches fall back to it when their target is absent.
+	var nudge_amount = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val)
+	var tangent: Vector3
+	if spiral > 0.1:
+		var up = Vector3.UP if abs(dir.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
+		tangent = dir.cross(up).normalized()
+		nudge_amount *= (1.0 + spiral)
+	else:
+		tangent = dir.cross(Vector3(randf_range(-1,1), randf_range(-1,1), randf_range(-1,1))).normalized()
+	_place_dot_on_sphere(dot, (dir + tangent * nudge_amount).normalized(), true)
+
 # --- Build (blocks) ---
 
 func _execute_build(dot: Node3D):
@@ -1065,7 +1129,10 @@ func _execute_build(dot: Node3D):
 	if wall_banner != null:
 		_respond_to_wall_banner(dot, my_dir, my_cell, my_colony, wall_banner)
 		return
-	# Look for an active, unused build banner within range
+	# Look for an active build banner within range that this dot HASN'T already built on
+	# (_find_eligible_build_banner skips this dot's build_banners_used ids). So a dot contributes
+	# to a given monument once, then must find another banner or found its own — it can still
+	# roll build freely, it just won't lock onto and re-feed the same banner.
 	var nearest_banner = _find_eligible_build_banner(dot, my_cell, my_colony)
 	if nearest_banner != null:
 		var banner_cell = nearest_banner["cell"]
@@ -1118,6 +1185,9 @@ func _execute_build(dot: Node3D):
 			if combat_locked_cells.get(build_cell, 0) > 0:
 				return
 			_create_block(build_cell, my_colony, dot_data[dot]["dot_id"], reason_str)
+			# Mark this banner used BY THIS DOT so it won't feed the same one again — the dot
+			# moves on to another banner, founds its own, or does something else next build roll.
+			dot_data[dot]["build_banners_used"][nearest_banner["id"]] = true
 			nearest_banner["block_count"] += 1
 			if nearest_banner["block_count"] >= nearest_banner["block_cap"]:
 				if LOG_ENABLED:
@@ -1207,9 +1277,9 @@ func _is_at_or_adjacent(a: Vector2i, b: Vector2i) -> bool:
 func _find_eligible_build_banner(dot: Node3D, my_cell: Vector2i, my_colony: int):
 	if build_banners.is_empty():
 		return null
-	# build_banners_used is never written anywhere, so used.has(...) below is always
-	# false. Dormant plumbing retained deliberately (easy to re-enable a per-dot banner
-	# cooldown); see DEVNOTES 2026-05-12.
+	# build_banners_used: per-dot set of banner ids this dot has already built on. Written in
+	# _execute_build on each banner placement (2026-07-25) so a dot won't re-feed the same
+	# monument — it contributes once, then finds another banner or founds its own.
 	var used = dot_data[dot].get("build_banners_used", {})
 	var best = null
 	var best_dist = BUILD_BANNER_RADIUS * BUILD_BANNER_RADIUS + 1
@@ -2221,7 +2291,9 @@ func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_
 		# here (between generations), never again during the dot's life. full_inheritance
 		# bypasses it, and is currently always true via _spawn_dot_near.
 		var dilution = 1.0 if full_inheritance else CCE_DILUTION
-		for layer in ["motion", "action"]:
+		for layer in ["motion", "action", "modes"]:
+			if not cce.has(layer) or not parent_cce.has(layer):
+				continue
 			for key in cce[layer]:
 				if parent_cce[layer].has(key):
 					cce[layer][key] = parent_cce[layer][key] * dilution

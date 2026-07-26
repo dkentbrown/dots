@@ -65,10 +65,26 @@ The bible's fixed vocabulary is motion = wander, cluster, spread, face_target, s
 
 ### T1.d — dials (range, intensity built; frequency, affinity, spiral unresolved)
 **Bible dials:** range, intensity, frequency, affinity. **Code dials:** range, intensity, **spiral**, with frequency/affinity reserved-unbuilt.
-- `frequency`, `affinity` unbuilt. **`affinity` is the big Tier 1 dependency** — `face_target` (which target?), `cluster`/`spread` (bias toward what?), `mark_surface` (colour/where?) all use fixed defaults today and would read affinity once it exists.
-- `spiral` is a **dial** in code but `spiral_path` is a **primitive** in the bible (now wired as one). The dial and primitive currently coexist; the dial only feeds `move`/`spiral_path` amplification.
-**Rec: BIBLE — build `affinity` (design-heavy, high payoff) and `frequency` (cheap); decide whether the `spiral` dial retires now that `spiral_path` is a primitive. Cost: M (affinity is the bulk).**
-`DECISION: ______`
+- `frequency`, `affinity` unbuilt. Superseded by T1.e below — the cluster/spread/face_target work `affinity` was meant to carry is now the **move-mode layer**, not a single scalar dial.
+- `spiral` is a **dial** in code but `spiral_path` is a **primitive** in the bible. Retires under T1.e (spiral becomes a move-mode).
+**Rec: folded into T1.e. Build `frequency` (cheap) separately if/when needed.**
+`DECISION: → see T1.e`
+
+### T1.e — Tier 1 collapse: cluster/spread/face_target/spiral → move-modes; mark → build/move motif ⚑ CANON CALL 2026-07-25
+**Decision (Dustan):** `cluster`, `spread`, `face_target`, `spiral_path` are **not verbs** — they are **modes of `move`** (cohesion / dispersion / confrontation / spiral: *how* a dot moves). `mark_surface` is **not a verb** — it is a **motif of two parents**: ornamentation on `build` (decorated monuments) and paths/roads from `move`. A mark is a trace those verbs leave, never a chosen per-tick action.
+
+**Resulting Tier 1 (7 verbs):** `move, gather, build, defend, attack, reproduce, observe`. The motion layer collapses to a single verb (`move`). This **supersedes the bible's §5.1 motion list** (wander/cluster/spread/face_target/spiral_path) → v0.5.
+
+**Why it's right:** each demoted item was a "secret move-mode" or a persistent trace, never an atomic distinct action; the affinity dial (T1.d) was already defined to carry exactly the cluster/spread bias. Collapsing also sharpens top-level selection (fewer pool competitors — compounds the linear-selection win) and is the concrete form of roadmap **step 2 (modes)** + **step 3 (motifs)**.
+
+**The design question the collapse hinges on — how modes attach:** a single scalar `affinity` dial CANNOT encode the four modes (toward-allies vs toward-enemies vs tangential are not one axis). So modes need a small **move-internal layer** — a named-mode weight set (cohesion / dispersion / spiral / confront) consulted *when move fires*, fed by CCE, NOT competing in the top-level verb pool. This is the first concrete instance of the NS recipe `r = action + mode` (move + mode), i.e. the beginning of the capstone architecture, arriving bottom-up.
+
+**Build order (no behaviour lost at any step):**
+1. ✅ **SHIPPED 2026-07-25.** Move-mode layer (`cce["modes"]` = cohesion/dispersion/confront) + `move` reads it: per-fire linear roulette (`_pick_move_mode`) over the modes + a `MOVE_DRIFT_BASE` drift baseline; mode bodies reuse `_local_ally_center` (cohesion toward / dispersion away) and `_find_nearest_foreign_in_radius` + `_face_dir` (confront = advance on nearest enemy, a semantic upgrade from the old orientation-only face_target). Modes are NOT in the top-level selection pool.
+2. ✅ **SHIPPED 2026-07-25.** `cluster/spread/face_target` removed from Tier 1 (NEUTRAL_CCE, both presets, TEST_FIELD_BASE, selection); their chant words (`cluster/huddle/…`, `spread/scatter/…`, `face/turn/confront/…`) repointed to raise move-mode weights (+ a little `move`). Modes wired through `_apply_recipe`, dilution, `_make_field_cce`. New per-colony `move_modes` telemetry. Field harness updated (clusterers→**cohesive**, spreaders→**dispersive**, facers→**confront**).
+   - **`spiral` KEPT as a verb** (Dustan): a spiral is a self-contained path, not a relational bias — genuinely verb-like. The `spiral` dial stays too (amplifies spiral_path); not retired.
+3. ⏳ **PENDING (Tier 3, later).** `mark` → motif: `mark_surface` still a verb for now; re-express as build-ornamentation + move-road traces once the motif feedback layer exists.
+`DECISION: BIBLE-superseding (v0.5). Representation = move-internal mode layer (recipe = move + mode), signed off. Steps 1-2 shipped; step 3 (mark motif) deferred to Tier 3.`
 
 ---
 
@@ -97,17 +113,35 @@ Audited against the intent above:
 **Rec: BIBLE/CODE (whichever way T2.a lands) — retune activation gating so banners require heavy, specialized CCE, using wall's Shape-D as the model; concentrate on rally + build. Cost: M.**
 `DECISION: ______`
 
-### T2.c — the NS 9-term selection model (in code, not bible)
-**Code:** `_tick_dot` scores `A + M + T + S_am + S_at + S_mt + C + E + H`; only `A` is live, the other 8 are zeroed stubs. **Bible:** plain weighted probability over the CCE pool.
-**Assessment:** with only `A` live, the code is **functionally identical to the bible's softmax** — no divergence in behavior. The 8 dormant terms are speculative scaffolding (I earlier mis-called them "core"; they aren't in the bible).
-**Rec: BIBLE — leave the stubs inert or simplify them out; do NOT invest in lighting them up. The sim's depth comes from CCE + dilution + blending, not a scoring model. Cost: 0 (leave) / S (simplify).**
-`DECISION: ______`
+### T2.c — the selection model: NS softmax vs. bible linear ✅ RESOLVED 2026-07-25
+**The full story (corrected after reading the NS source, `procedural_civ_primitives_report`):**
+- **NS §11:** `P(r) = softmax(A_action + M_mode + T_motif + S_am + S_at + S_mt + C_chant + E_env + H_history)` where **`r = action + mode + motif`** — a composite RECIPE, not a bare verb. Softmax is correct *there*: nine live terms, a wide signed score range, negative synergies. It operates one tier ABOVE primitive selection.
+- **Bible §5.1 (supersedes):** "chosen probabilistically from the combined motion and action weight pool" — plain **linear** weighted pick over Tier 1 primitives. The bible deliberately collapsed the NS's recipe-softmax into a simple pool roulette.
+- **Code (the bug):** grafted the NS softmax onto the bible's simplified space — `exp(score/T)` over bare Tier 1 weights in `[0,1]` with only `A` live. Faithful to NEITHER doc. Softmax on a tiny non-negative range with 8 dead terms does nothing but **compress**.
 
-**⚠️ Finding (2026-07-24): the softmax compresses CCE differences, and this now matters.**
-Selection is `w = exp(weight)` over primitives with weight > 0. That curve is **flat**: a primitive at 0.9 versus one at 0.4 is only ~**1.65×** more likely to fire, not 2.25×. Two consequences:
-- Large CCE deltas buy small behavioural changes. **This directly caps S.c** — soul can multiply a chant's delta 5×, but the sim will still only shift firing odds modestly, so the "rapid pivot" S.c is designed to deliver is throttled by this curve, not by the multiplier.
-- A `SELECTION_TEMPERATURE` constant was added (`exp(score / T)`), **set to 1.0 = shipped behaviour, unchanged**. Lowering it sharpens selection. It is a lever only; retuning it reshapes ALL primitive selection and is a deliberate call, not a side effect.
-`DECISION (temperature): ______  — likely the first tuning dial once S.c is playtested.`
+**The compression, measured:** saturated specialist (primary 1.0, ten others at 0.06 baseline) fires its primary **20.4% under softmax vs 62.5% under linear**; a verb at weight 0.10 fires **19.8% under softmax vs 7.7% linear** (softmax over-represents low weights, so "a bit of everything" floods behaviour). A chant doubling a weight (0.4→0.8) buys **1.5× under softmax, 2× linear**. This is the root of BOTH the muddy-specialists problem and the weak soul-pivot (S.c is throttled by this curve, not by the multiplier).
+
+**The 8 dormant terms are NOT junk scaffolding** (my earlier "non-core" call was half-wrong). They are the **Tier 2/3 model** (modes, motifs, environment, history) waiting for inputs that do not exist yet. They read zero because modes/motifs aren't built — not because they're wrong. When Tier 2 exists, the NS softmax returns *above* primitive selection, exactly where §11 puts it.
+
+**DECISION (Dustan, 2026-07-25): BIBLE — linear Tier 1 selection now; NS softmax reserved for the eventual recipe (mode/motif) tier.** Implemented as a `SELECTION_SOFTMAX` flag (`false` = linear pool, the bible model; `true` = the NS softmax path, kept for the capstone). Linear is valid precisely because we're in the Tier-1-only regime where `score == a non-negative weight`; the softmax path returns when the score terms can go signed. This realigns the code to canon and fixes specialization + the soul pivot in one flag.
+`DECISION: BIBLE (linear now) + NS softmax deferred to Tier 2/3 capstone. RESOLVED.`
+
+### The three-tier build roadmap (2026-07-25) — how the NS actually gets built
+**The reframe that unblocked this:** the NS is not a formula to implement; it is three tiers to enrich, and crude versions of all three already exist. The softmax is the *capstone* that ties them together once each is worth combining — you build it last, not first. Earlier attempts stalled because we started at the 9-term formula (which needs modes/motifs/environment/history all at once) instead of the tiers.
+
+| Tier | NS term | Plain meaning | What exists today |
+|---|---|---|---|
+| 1 | Verbs | *what* a dot does | ✅ move/attack/gather/build/defend… selected each tick |
+| 2 | Modes | *how / in what style* | 🟡 the **dials** (range/intensity/frequency/affinity) are the raw material for named modes |
+| 3 | Motifs | *the lasting anchor* the culture orients around | 🟡 **monuments + walls** are physical proto-motifs, not yet "remembered" or fed back |
+
+**Staged path (each step small, shippable, understandable on its own):**
+1. **Finish solid Tier 1 ground — linear selection.** ← *this step, shipping now.* A dot does one clear thing; specialists specialize; behaviour becomes legible; soul pivot works. The floor everything stands on.
+2. **Give Tier 2 a name.** A "mode" = a named bundle of dial settings + a verb lean (e.g. "fierce" = high intensity, low range, attack-leaning). Wrap a memorable name around a dial pattern. Start with ONE mode, watch it, add more.
+3. **Let Tier 3 remember.** A monument already exists physically; the step is letting it feed back into behaviour (a colony that built a great monument keeps valuing building near it). One motif, one feedback loop.
+4. **Capstone — the NS softmax returns.** With verbs + a few modes + a motif all live, "which recipe fires" becomes a real question over `action+mode+motif`, and the softmax (flip `SELECTION_SOFTMAX = true`, activate the score terms) earns its place — read as obvious, not abstract, because each piece was watched first.
+
+**Discipline:** never build the capstone directly. Build the three understandable things; the confusing part becomes the easy last step.
 
 ---
 
@@ -207,7 +241,7 @@ Carry these into the roadmap: CCE-blending proximity radius & rate · ~~resource
 | T1.d | dials (affinity/frequency/spiral) | | |
 | T2.a | mode architecture (banners vs emergence) | | **the big one** |
 | T2.b | banner gating too shallow | | |
-| T2.c | NS 9-term selection stubs | | + softmax-compression finding; `SELECTION_TEMPERATURE` lever added at 1.0 |
+| T2.c | selection model (NS softmax vs bible linear) | **BIBLE (linear now)** | RESOLVED 2026-07-25; `SELECTION_SOFTMAX` flag, softmax deferred to Tier 2/3 capstone; three-tier roadmap added |
 | T3.a | monuments & wall lines | | follows T2.a |
 | S.a | dilution + blending | | identity; parked by Dustan |
 | S.b | server / LLM / MP spine | | launch milestone; contract alignment done |
