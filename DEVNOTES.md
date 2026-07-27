@@ -1919,7 +1919,7 @@ Two genuinely large threads remain, both needing a design pass before code: (1) 
 
 ---
 
-## 2026-07-21 (cont. 3) — DESIGN BIBLE FOUND; Tier 1 vocabulary completed; planning reset. **Hydration entry — start here.**
+## 2026-07-21 (cont. 3) — DESIGN BIBLE FOUND; Tier 1 vocabulary completed; planning reset. *(historical hydration entry — superseded; the LAST entry is the current start-here.)*
 
 This is the current-state entry. If you are a fresh session, read this plus `RECONCILIATION.md`, and read `Noema_Design_Bible_v0.4.docx` before any design discussion.
 
@@ -2010,7 +2010,7 @@ A fresh session should therefore find `git status` clean and `origin/main` level
 
 ---
 
-## 2026-07-24 — Tier 1 recipes reachable; SOUL given a job (first canon call); 5-colony playtest field; walling gated to the frontier. **Hydration entry — start here.**
+## 2026-07-24 — Tier 1 recipes reachable; SOUL given a job (first canon call); 5-colony playtest field; walling gated to the frontier. *(historical hydration entry — superseded; the LAST entry is the current start-here.)*
 
 Long session, four shipped blocks plus two runs of telemetry. Working tree was clean at `860d53e` at the start.
 
@@ -2094,7 +2094,7 @@ Also: generalists still wall on 89% of sightings — the clamp stops `prob > 1` 
 
 ---
 
-## 2026-07-25 — SOUL FLOWS: gather made real, 10x speck supply; 10-colony field; combat defense traced; perf caps. **Hydration entry — start here.**
+## 2026-07-25 — SOUL FLOWS: gather made real, 10x speck supply; 10-colony field; combat defense traced; perf caps. *(historical hydration entry — superseded; the LAST entry is the current start-here.)*
 
 Continues 2026-07-24. That entry's "Next" list led here. Two commits this session on top of `19fb29e`:
 - `19fb29e` (prior session) — soul multiplier + Tier 1 recipes + 5-colony field + frontier walling + mark fix.
@@ -2153,7 +2153,7 @@ The 10-colony run stalled. Object growth at tick 143: 6,250 dots, 2,552 blocks, 
 
 ---
 
-## 2026-07-25 (cont.) — NS SOURCE READ; selection model resolved (linear now); three-tier build roadmap set. **Hydration entry — start here.**
+## 2026-07-25 (cont.) — NS SOURCE READ; selection model resolved (linear now); three-tier build roadmap set. *(historical hydration entry — superseded; the LAST entry is the current start-here.)*
 
 Dustan surfaced the North Star source itself: `procedural_civ_primitives_report` (a 2026-05-28 "Design-Facing Anthropology and Game-Systems Report", NOT in the repo — it lives in Downloads). Context he gave: the project steered AWAY from the NS earlier because it was too confusing to see a way forward, not because it was wrong. He likes what it proposes; we kept getting mired in the formula.
 
@@ -2266,3 +2266,39 @@ Goal (Dustan): a build-heavy colony shouldn't lock a dot onto one banner and tow
 **Tuning levers noted for later (NOT pulled — needs more than one run):** builders' build CCE weight (dominance), FIELD_BASE_BIT build + BUILD_START_CHANCE (map-wide block volume), a BLOCK_MAX cap (blocks remain the one uncapped growth term).
 
 This commit banks the whole session stack: linear selection (T2.c), the Tier-1 move-mode collapse (T1.e, spiral kept), and this build nerf.
+
+---
+
+## 2026-07-26 — CURRENT STATE. Session arc merged to main (PR #1). **Hydration entry — START HERE.**
+
+Fresh session: read THIS entry + `RECONCILIATION.md` + `Noema_Design_Bible_v0.4.docx` before any design work. The four older "hydration entry" markers above are historical (superseded).
+
+### Git
+All of the 07-24/07-25 work is **merged to `main`** — `main` at **6f8595a** (PR #1, merged 2026-07-26). Working tree clean. Start new work on a FRESH branch off main (don't reuse the merged `session/2026-07-24-...` branch).
+
+### What the game is
+"Noema" — persistent MP chant-driven civ sim, player is an influence not an avatar (bible is canonical). Code had diverged; this session pulled it back toward the bible + the North Star three-tier model (the NS is `procedural_civ_primitives_report`, in Downloads, NOT in the repo).
+
+### Tier 1 vocabulary NOW (changed this session — do not trust older entries' lists)
+**7 verbs:** move, gather, build, defend, attack, reproduce, observe — plus **spiral_path** kept as a verb.
+- **cluster / spread / face_target are GONE as verbs** — they are now **move-MODES** (`cce["modes"]` = cohesion / dispersion / confront), chosen per-fire *under* `move`, not in the top-level selection pool (RECONCILIATION T1.e).
+- **mark_surface is still a verb** but is slated to become a Tier-3 **motif** (build-ornamentation + move-roads) — T1.e step 3, NOT yet built.
+
+### Selection model (resolved this session)
+**LINEAR** weighted pool (bible §5.1): `SELECTION_SOFTMAX = false`, `w = weight`. The NS's softmax was being mis-applied to bare verbs (compressed specialization); it's reserved behind the flag for the eventual recipe/capstone tier where §11 puts it. Linear made specialists fire their primary ~48% (was ~20%) and let gather beat incidental wandering. (RECONCILIATION T2.c — RESOLVED.)
+
+### Soul (the economy works now)
+Soul-weighted chant potency is live (S.c, first canon call): soul multiplies a chant's CCE delta, the chant draws the pool. `gather` is a real verb now (was a no-op) and speck supply is 10x, so **soul flows** (peak pool 25-31, multiplier ~1.9x). **OPEN — the key next question:** nothing yet makes LOW soul *hurt*, so soul can't counter aggression as designed (§13). The parked fork: **dilution** (bible-native — CCE drifts, forcing re-chant → needs soul → needs gather; raiders dilute fastest, gather least) vs. a **sustain cost**. Dilution is currently OFF (`full_inheritance=true`).
+
+### Three-tier roadmap (RECONCILIATION T1.e / T2.c) — how the NS gets built, bottom-up
+1. Tier-1 floor / linear selection ✅ done. 2. Tier-2 modes — STARTED (move-modes). 3. Tier-3 motifs (mark→roads/ornament) — pending. 4. Capstone (NS softmax over action+mode+motif recipes; flip `SELECTION_SOFTMAX`) — far off. Build the tiers; the formula is the LAST step, not the first.
+
+### Test harness state (committed ON)
+`TEST_FIELD = true` — boots the 10-colony playtest field (Fibonacci-spread, discrete colony colors via `TEST_FIELD_DISCRETE_COLORS`, tick-50 attack/defend generalist split, `move_modes` telemetry). Set `TEST_FIELD = false` to restore the shipped player-vs-enemy spawn; `TEST_FIELD_DISCRETE_COLORS = false` restores CCE-tint coloring. Telemetry `primitives` and `move_modes` are per-colony nested dicts.
+
+### NEXT (recommended order)
+1. **Close the soul loop** — make low soul hurt (dilution-vs-sustain fork above). Highest value; it's the game's identity and soul is proven to flow. Gated only on that decision.
+2. **mark → motif** (T1.e step 3) — finishes the collapse; starts the Tier-3 feedback layer.
+3. **Combat defense balance** — defenders win only when they commit (0%→45%); `attack+defend` favors aggressors. Pair with #1.
+
+### Parked tuning (need MULTIPLE runs, not one): builders' build CCE weight (build dominance is weight-driven, NOT the banner mechanic); `FIELD_BASE_BIT` build + `BUILD_START_CHANCE` (map-wide block volume); a `BLOCK_MAX` cap (blocks are the one uncapped growth term). Also parked: dilution/blending (S.a), server/LLM/MP spine (S.b), affinity/frequency dials, multi-word chant parsing.

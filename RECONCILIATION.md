@@ -1,6 +1,6 @@
 # NOEMA — Bible ↔ Code Reconciliation
 
-**Status:** draft for review · created 2026-07-21 · restructured 2026-07-21 around the three-tier spine · updated 2026-07-24 (Tier 1 recipes shipped; first canon call made — S.c soul) · author: Claude Code (planning+implementation layer)
+**Status:** draft for review · created 2026-07-21 · restructured 2026-07-21 around the three-tier spine · updated 2026-07-24 (Tier 1 recipes; first canon call — S.c soul) · updated 2026-07-25 (T2.c RESOLVED — linear selection; T1.e canon call + shipped — Tier-1 move-mode collapse; three-tier build roadmap) · all merged to `main` via PR #1 (2026-07-26) · author: Claude Code (planning+implementation layer)
 **Sources:** `Noema_Design_Bible_v0.4.docx` (design canon) vs. `main.gd` (current code) + `DEVNOTES.md` (tactical log).
 
 ## Why this document exists
