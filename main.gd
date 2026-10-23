@@ -26,6 +26,21 @@ const DOT_LIFETIME = 100
 const DILUTION_MIN = 0.7           # inheritance rate at zero soul (the bible's default rate)
 const DILUTION_MAX = 1.0           # inheritance rate as soul -> infinity (full persistence)
 const SOUL_DILUTION_HALF = 100.0   # soul at which half the min->max range is recovered
+# CCE blending (bible §12) — cultural contact between colonies, through two channels:
+#  1. CONTACT (_tick_blending): each tick, every pair of LIVING dots from different colonies
+#     within BLEND_RADIUS cells steps toward each other by BLEND_RATE of the gap, across every
+#     CCE layer and dial. Convergent and sum-preserving — culture is exchanged, never created.
+#  2. BORDER BIRTHS (_create_dot): a newborn whose parent is within BLEND_RADIUS of foreign dots
+#     inherits a source CCE mixed BIRTH_BLEND toward those foreigners' mean, THEN diluted at its
+#     own colony's rate. The child still joins the parent's colony.
+# BLEND_RADIUS is 2 (a 5x5 window), not 1: drift refuses to step into a foreigner's 3x3
+# (_is_blocked_by_foreign), so radius 1 would only ever see marching/combat fronts, never a
+# settled border. Blocks carry no culture across borders. PLACEHOLDER values — the bible leaves
+# both the radius and the rate open (§16).
+const BLEND_RADIUS = 2
+const BLEND_RATE = 0.01            # per contact pair, per tick, fraction of the gap closed
+const BIRTH_BLEND = 0.25           # share of a border-born child's inheritance that is foreign
+const CCE_BLEND_LAYERS = ["motion", "action", "modes", "dials"]
 const CHANT_WEIGHT = 0.08
 const CHANT_FILE = "res://chant.json"
 
@@ -334,7 +349,8 @@ const CCE_NEUTRAL_COLOR = Color(1.0, 1.0, 1.0)
 # Active chant aliases. Payload shape is the bible's /chant contract
 # ({motion:{}, action:{}, dials:{}}) so flipping USE_SERVER swaps the source of these
 # dictionaries without touching _apply_recipe.
-# `build` is still absent — it has an executor but no alias, so it cannot be chanted.
+# These hand-tuned words win over CHANT_LEXICON below on any overlap. `build` has no alias here;
+# it is reachable through CHANT_LEXICON.
 const CHANT_RECIPES = {
 	"wander":    { "motion": { "move": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
 	"explore":   { "motion": { "move": CHANT_WEIGHT }, "dials": { "range": 0.05 } },
@@ -394,6 +410,108 @@ const CHANT_RECIPES = {
 	"slow":      { "dials": { "intensity": -0.1 } }
 }
 
+# Baked chant lexicon — the local stand-in for the bible's §7 LLM interpreter. Each group is
+# [words, fragment]; a chant is split into words and every known word adds its fragment to one
+# recipe (see _interpret_chant), so phrases compose: 'wander far', 'sharp bladed warriors',
+# 'build tall toward the moon'. Fragments target only the fixed schema (verbs, move-modes,
+# dials) — the table invents recipes, never primitives (§7). Words not found here or in
+# CHANT_RECIPES are logged as `unmatched` in the chant_parsed telemetry record: that list is
+# how the table grows, and later what a server LLM (with a shared cache) would fill in.
+# Inflections (-s/-es/-ed/-ing/-er/-ers/-ly) are stripped at lookup, so list base forms.
+const CHANT_LEXICON = [
+	# --- move (wander) ---
+	[["go", "walk", "travel", "journey", "drift", "venture", "migrate", "stray", "rove", "trek", "voyage", "move", "run", "nomad", "nomadic", "pilgrim", "pilgrimage", "road", "path", "trail", "onward"],
+		{ "motion": { "move": CHANT_WEIGHT }, "dials": { "range": 0.05 } }],
+	[["wanderlust", "odyssey", "exodus"],
+		{ "motion": { "move": CHANT_WEIGHT * 1.5 }, "dials": { "range": 0.1 } }],
+	[["seek", "search", "quest", "discover", "discovery", "curious", "curiosity"],
+		{ "motion": { "move": CHANT_WEIGHT * 0.5 }, "action": { "observe": CHANT_WEIGHT * 0.5 } }],
+	# --- spiral_path ---
+	[["swirl", "spin", "orbit", "vortex", "helix", "gyre", "wheel", "loop", "eddy", "whorl", "cyclone", "revolve", "circle", "round", "dance"],
+		{ "motion": { "spiral_path": CHANT_WEIGHT }, "dials": { "spiral": 0.05 } }],
+	# celestial — §5.3 'build tall toward the moon' reads the moon as spiral + upward building
+	[["moon", "star", "heaven", "cosmos", "celestial"],
+		{ "motion": { "spiral_path": CHANT_WEIGHT * 0.5 }, "action": { "build": CHANT_WEIGHT * 0.5 }, "dials": { "range": 0.05 } }],
+	# --- move-mode: cohesion ---
+	[["unite", "union", "kin", "kinship", "family", "families", "tribe", "clan", "home", "hearth", "embrace", "crowd", "herd", "bond", "belong", "community", "cling", "nest", "inward"],
+		{ "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "cohesion": CHANT_WEIGHT }, "dials": { "range": -0.05 } }],
+	# --- move-mode: dispersion ---
+	[["alone", "solitude", "solitary", "diaspora", "expand", "expansion", "settle", "frontier", "outward", "leave", "depart", "exile", "flee", "escape", "split", "free", "freedom", "wild", "away", "abroad", "colonize"],
+		{ "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "dispersion": CHANT_WEIGHT }, "dials": { "range": 0.05 } }],
+	# --- move-mode: confront ---
+	[["challenge", "approach", "advance", "march", "meet", "oppose", "defy", "encroach", "border", "rival", "enemy", "enemies", "foe"],
+		{ "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "confront": CHANT_WEIGHT }, "dials": { "range": 0.05 } }],
+	[["hunt", "chase", "pursue", "stalk", "prey"],
+		{ "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "confront": CHANT_WEIGHT }, "action": { "attack": CHANT_WEIGHT * 0.5 }, "dials": { "range": 0.05 } }],
+	[["invade", "invasion", "conquer", "conquest", "raid", "siege", "assault", "charge"],
+		{ "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "confront": CHANT_WEIGHT * 0.5 }, "action": { "attack": CHANT_WEIGHT }, "dials": { "intensity": 0.05 } }],
+	# --- attack ---
+	[["kill", "strike", "slay", "destroy", "battle", "blood", "bloody", "warrior", "soldier", "rage", "fury", "wrath", "hate", "hatred", "vengeance", "revenge", "crush", "ravage", "slaughter", "violence", "violent", "predator", "beast", "savage", "claw", "fang", "conflict", "combat", "murder", "wound"],
+		{ "action": { "attack": CHANT_WEIGHT }, "dials": { "intensity": 0.05 } }],
+	# close-quarters weapons — §5.3 'sharp bladed warriors': attack, intensity up, range down
+	[["blade", "bladed", "sword", "dagger", "knife", "knives", "axe", "fist", "teeth"],
+		{ "action": { "attack": CHANT_WEIGHT }, "dials": { "intensity": 0.05, "range": -0.05 } }],
+	[["spear", "arrow", "bow", "sling", "javelin"],
+		{ "action": { "attack": CHANT_WEIGHT }, "dials": { "range": 0.05 } }],
+	# peace pushes attack DOWN — a new negative contribution, not an undo of past chants (§5.4)
+	[["peace", "peaceful", "mercy", "merciful", "forgive", "harmony", "kindness", "kind"],
+		{ "action": { "attack": -CHANT_WEIGHT * 0.5 }, "dials": { "intensity": -0.05 } }],
+	# --- defend ---
+	[["shield", "hold", "endure", "resist", "ward", "sentinel", "safe", "safety", "shelter", "armor", "armour", "stand", "steadfast", "refuge", "sanctuary", "barrier", "defense", "defence", "survive"],
+		{ "action": { "defend": CHANT_WEIGHT } }],
+	# fortification — §8 'The Quiet Fortress': defend + some build, tighter range
+	[["fortress", "fort", "fortify", "bastion", "rampart", "wall", "bulwark", "citadel", "castle", "stronghold", "gate"],
+		{ "action": { "defend": CHANT_WEIGHT, "build": CHANT_WEIGHT * 0.5 }, "dials": { "range": -0.05 } }],
+	# --- build ---
+	[["build", "builder", "raise", "tower", "stack", "monument", "temple", "pillar", "spire", "construct", "craft", "make", "create", "shape", "carve", "stone", "brick", "city", "cities", "pyramid", "statue", "altar", "architecture", "forge", "foundation"],
+		{ "action": { "build": CHANT_WEIGHT } }],
+	# upward — for build, the range dial is how tall (§6)
+	[["tall", "high", "upward", "ascend", "rise", "climb", "soar", "summit", "peak", "lofty", "skyward", "sky", "skies"],
+		{ "action": { "build": CHANT_WEIGHT * 0.5 }, "dials": { "range": 0.1 } }],
+	# --- gather (co-raises observe, like the CHANT_RECIPES gather words) ---
+	[["reap", "glean", "hoard", "store", "stockpile", "find", "soul", "speck", "feed", "feast", "food", "bounty", "wealth", "treasure", "riches", "gold", "abundance", "plenty", "grain", "fruit", "provide", "work", "labor", "labour", "toil"],
+		{ "action": { "gather": CHANT_WEIGHT, "observe": CHANT_WEIGHT } }],
+	# --- reproduce ---
+	[["grow", "growth", "birth", "born", "bear", "children", "child", "offspring", "fertile", "fertility", "seed", "bloom", "blossom", "flourish", "thrive", "spawn", "mother", "father", "generation", "nurture", "life", "live", "populate", "descendants"],
+		{ "action": { "reproduce": CHANT_WEIGHT } }],
+	[["swarm", "multitude", "teeming", "legion", "horde"],
+		{ "action": { "reproduce": CHANT_WEIGHT * 0.5 }, "modes": { "cohesion": CHANT_WEIGHT * 0.5 } }],
+	[["love", "lover", "beloved"],
+		{ "action": { "reproduce": CHANT_WEIGHT }, "modes": { "cohesion": CHANT_WEIGHT * 0.5 } }],
+	# --- observe ---
+	[["look", "listen", "notice", "scout", "witness", "gaze", "wonder", "learn", "know", "knowledge", "wisdom", "wise", "think", "eye", "sense", "perceive", "vigil", "watchful", "aware", "awareness", "study", "understand", "alert", "vigilant"],
+		{ "action": { "observe": CHANT_WEIGHT } }],
+	# --- mark_surface ---
+	[["draw", "write", "inscribe", "etch", "sign", "symbol", "glyph", "rune", "art", "story", "stories", "remember", "memory", "memories", "legacy", "track", "footprint", "ink", "dye", "decorate", "adorn", "beauty", "beautiful", "color", "colour", "song", "sing", "myth"],
+		{ "action": { "mark_surface": CHANT_WEIGHT }, "dials": { "intensity": 0.05 } }],
+	# --- dial-only modifiers ---
+	[["vast", "beyond", "endless", "boundless", "infinite", "everywhere", "faraway", "remote"],
+		{ "dials": { "range": 0.1 } }],
+	[["wide", "long", "reach", "open", "great", "broad"],
+		{ "dials": { "range": 0.05 } }],
+	[["small", "little", "narrow", "here", "within", "compact", "short"],
+		{ "dials": { "range": -0.05 } }],
+	[["powerful", "mighty", "relentless", "furious", "burning", "fire", "flame", "iron", "steel", "brutal", "ferocious", "intense"],
+		{ "dials": { "intensity": 0.1 } }],
+	[["deep", "hard", "bold", "brave", "courage", "proud", "loud", "power", "strength"],
+		{ "dials": { "intensity": 0.05 } }],
+	[["quiet", "calm", "silent", "silence", "tender", "mild", "meek", "humble", "serene", "faint", "weak", "whisper", "gently"],
+		{ "dials": { "intensity": -0.05 } }],
+]
+# Function words. A negator flips the sign of the NEXT known word ('never fight' lowers attack;
+# negators toggle, so 'never stop fighting' raises it). An intensifier scales the next known
+# word by CHANT_INTENSIFY. Stopwords are dropped silently so `unmatched` lists only real misses.
+const CHANT_NEGATORS = ["no", "not", "never", "dont", "cant", "wont", "without", "nor", "cease", "stop", "neither", "none"]
+const CHANT_INTENSIFIERS = ["very", "truly", "always", "forever", "utterly", "ever", "more", "so", "most", "much"]
+const CHANT_STOPWORDS = ["the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with", "by", "from", "into", "toward", "towards", "upon", "over", "under", "through", "across", "our", "we", "us", "you", "your", "i", "my", "me", "their", "they", "them", "it", "its", "is", "are", "be", "as", "that", "this", "these", "those", "all", "every", "each", "let", "may", "shall", "will", "must", "until", "then", "than", "who", "what", "where", "when", "o", "oh"]
+const CHANT_SUFFIXES = ["ing", "ers", "er", "ed", "es", "s", "ly"]
+const CHANT_INTENSIFY = 1.5
+# Per-chant caps on the composed recipe (before the soul multiplier), so a long or repetitive
+# chant can't stack one word into a single huge shove. Every single word in either table sits
+# under these, so one-word chants apply exactly as before. PLACEHOLDER values.
+const CHANT_MAX_WEIGHT = CHANT_WEIGHT * 2.0
+const CHANT_MAX_DIAL = 0.15
+
 var dots = []
 var dot_data = {}
 var specks = []
@@ -405,6 +523,12 @@ var _primitive_counts = {}
 # the verification signal that a mode actually executed vs fell back to drift. Same lifecycle
 # as _primitive_counts (cleared each tick, read into the snapshot).
 var _move_mode_counts = {}
+# Per-colony blending tally: { colony: { "contacts": pair-ticks, "births": border births } }.
+# Unlike the two tallies above this ACCUMULATES across the snapshot interval (border births
+# are too rare to sample from a single tick) and is cleared when the snapshot is written.
+var _blend_counts = {}
+# word -> recipe fragment, built once in _ready from CHANT_LEXICON + CHANT_RECIPES.
+var _chant_lexicon = {}
 # Live-dot record (see _create_dot):
 # dot_data[dot] = {
 #   "age": int,                 # ticks lived, dies at DOT_LIFETIME
@@ -485,8 +609,10 @@ const COLONY0_CCE = {
 
 var zoom_target = 3.0
 var zoom_distance = 3.0
-var orbit_yaw = 0.0
-var orbit_pitch = 0.0
+# Free (trackball) orbit: the camera's orientation, rotated about its OWN axes by drag. No
+# pitch limit and no world-up — the view rolls straight over the poles. The camera sits on
+# this basis's +z at zoom_distance, looking at the origin. Identity = the old yaw 0 / pitch 0.
+var orbit_basis = Basis.IDENTITY
 var is_orbiting = false
 var touch_positions = {}
 var pinch_last_distance = 0.0
@@ -509,6 +635,7 @@ func _ready():
 			f.close()
 	# Telemetry is persistent (not wiped); a run_start record segments accumulated runs.
 	_telemetry({ "type": "run_start", "run_id": int(Time.get_unix_time_from_system()), "grid_res": GRID_RES })
+	_build_chant_lexicon()
 	if TEST_FIELD:
 		_spawn_test_field()
 	else:
@@ -577,6 +704,8 @@ func _process(delta):
 		_primitive_counts.clear()
 		_move_mode_counts.clear()
 		_tick_all_dots()
+		# Blending runs after dots move so contact reflects this tick's positions.
+		_tick_blending()
 		# Soul decay runs AFTER _tick_all_dots so this tick's gathering is credited before
 		# erosion applies (see SOUL_DECAY_RATE).
 		_tick_soul_decay()
@@ -596,8 +725,10 @@ func _process(delta):
 				"specks": specks.size(),
 				"primitives": _primitive_counts.duplicate(true),
 				"move_modes": _move_mode_counts.duplicate(true),
+				"blend": _blend_counts.duplicate(true),
 				"marks": surface_marks.size()
 			})
+			_blend_counts.clear()
 
 # --- Chant file ---
 
@@ -698,6 +829,113 @@ func _tick_soul_decay() -> void:
 	for c in soul_pool.keys():
 		soul_pool[c] = int(soul_pool[c] * (1.0 - SOUL_DECAY_RATE))
 
+func _tick_blending() -> void:
+	# Bible §12 contact channel (see BLEND_RADIUS). Living dots are bucketed by cell, then each
+	# cell scans only the FORWARD half of its window (dv > 0, or dv == 0 and du >= 0) so every
+	# unordered cell pair — and so every dot pair — is visited exactly once. Same u-wrap /
+	# v-clamp neighbourhood walk as the detection scans.
+	var living = {}
+	for dot in dots:
+		if dot_data[dot].get("is_block", false):
+			continue
+		var cell = dot_cell.get(dot, _cell_key(dot.position.normalized()))
+		if not living.has(cell):
+			living[cell] = []
+		living[cell].append(dot)
+	var touched = {}
+	for key in living:
+		var here = living[key]
+		for du in range(-BLEND_RADIUS, BLEND_RADIUS + 1):
+			for dv in range(0, BLEND_RADIUS + 1):
+				if dv == 0 and du < 0:
+					continue
+				var ny = key.y + dv
+				if ny > GRID_RES - 1:
+					continue
+				var neighbor = Vector2i((key.x + du + GRID_RES) % GRID_RES, ny)
+				if not living.has(neighbor):
+					continue
+				var there = living[neighbor]
+				var same_cell = du == 0 and dv == 0
+				for i in range(here.size()):
+					var a = here[i]
+					var ca = dot_data[a]["colony"]
+					for j in range(i + 1 if same_cell else 0, there.size()):
+						var b = there[j]
+						var cb = dot_data[b]["colony"]
+						if ca == cb:
+							continue
+						_blend_pair(dot_data[a]["cce"], dot_data[b]["cce"], BLEND_RATE)
+						touched[a] = true
+						touched[b] = true
+						_tally_blend(ca, "contacts")
+						_tally_blend(cb, "contacts")
+	for dot in touched:
+		_update_dot_color(dot)
+
+func _blend_pair(a: Dictionary, b: Dictionary, rate: float) -> void:
+	# Both CCEs step toward each other from their pre-exchange values: the pair's sum is
+	# unchanged, so contact moves culture between colonies without inflating either.
+	for layer in CCE_BLEND_LAYERS:
+		if not a.has(layer) or not b.has(layer):
+			continue
+		for key in a[layer]:
+			if not b[layer].has(key):
+				continue
+			var av = a[layer][key]
+			var bv = b[layer][key]
+			a[layer][key] = av + (bv - av) * rate
+			b[layer][key] = bv + (av - bv) * rate
+
+func _blend_toward(target: Dictionary, toward: Dictionary, rate: float) -> void:
+	# One-way version of _blend_pair, for the border-birth channel (target is a scratch copy).
+	for layer in CCE_BLEND_LAYERS:
+		if not target.has(layer) or not toward.has(layer):
+			continue
+		for key in target[layer]:
+			if toward[layer].has(key):
+				target[layer][key] += (toward[layer][key] - target[layer][key]) * rate
+
+func _foreign_cce_mean_near(dot: Node3D, my_colony: int) -> Dictionary:
+	# Mean CCE of the living foreign dots within BLEND_RADIUS cells of `dot`, or {} if none.
+	var key = dot_cell.get(dot, _cell_key(dot.position.normalized()))
+	var sum = {}
+	var count = 0
+	for du in range(-BLEND_RADIUS, BLEND_RADIUS + 1):
+		for dv in range(-BLEND_RADIUS, BLEND_RADIUS + 1):
+			# u wraps (longitude); v clamps (latitude — no pole wrap, see F2)
+			var ny = key.y + dv
+			if ny < 0 or ny > GRID_RES - 1:
+				continue
+			var neighbor = Vector2i((key.x + du + GRID_RES) % GRID_RES, ny)
+			if not spatial_grid.has(neighbor):
+				continue
+			for occupant in spatial_grid[neighbor]:
+				if not dot_data.has(occupant):
+					continue
+				var od = dot_data[occupant]
+				if od.get("is_block", false) or od["colony"] == my_colony:
+					continue
+				for layer in CCE_BLEND_LAYERS:
+					if not od["cce"].has(layer):
+						continue
+					if not sum.has(layer):
+						sum[layer] = {}
+					for k in od["cce"][layer]:
+						sum[layer][k] = sum[layer].get(k, 0.0) + od["cce"][layer][k]
+				count += 1
+	if count == 0:
+		return {}
+	for layer in sum:
+		for k in sum[layer]:
+			sum[layer][k] /= count
+	return sum
+
+func _tally_blend(colony: int, kind: String) -> void:
+	if not _blend_counts.has(colony):
+		_blend_counts[colony] = { "contacts": 0, "births": 0 }
+	_blend_counts[colony][kind] += 1
+
 func _tick_autochant() -> void:
 	# Playtest-field CCE driver: every AUTOCHANT_INTERVAL ticks each surviving colony
 	# re-chants its lean, so cultures deepen as the run progresses instead of sitting at
@@ -782,11 +1020,88 @@ func _send_chant_to_server(_text: String):
 	pass
 
 func _process_chant_locally(text: String):
-	var lower = text.to_lower().strip_edges()
-	if not CHANT_RECIPES.has(lower):
+	var parsed = _interpret_chant(text)
+	print("Chant '", text, "' -> matched ", parsed["matched"], "  unmatched ", parsed["unmatched"])
+	_telemetry({
+		"type": "chant_parsed",
+		"tick": _tick_num,
+		"text": text,
+		"matched": parsed["matched"],
+		"unmatched": parsed["unmatched"]
+	})
+	if parsed["matched"].is_empty():
 		print("No local recipe for: ", text)
 		return
-	_apply_recipe(CHANT_RECIPES[lower])
+	_apply_recipe(parsed["recipe"])
+
+func _build_chant_lexicon() -> void:
+	for group in CHANT_LEXICON:
+		for word in group[0]:
+			_chant_lexicon[word] = group[1]
+	# The hand-tuned single-word aliases win on any overlap.
+	for word in CHANT_RECIPES:
+		_chant_lexicon[word] = CHANT_RECIPES[word]
+
+func _chant_lookup(word: String) -> Dictionary:
+	# Exact word first, then with a common inflection stripped: 'builds' -> build,
+	# 'huddled' -> huddle (re-adds a dropped e), 'spinning' -> spin (undoubles a consonant).
+	# Returns {} for an unknown word.
+	if _chant_lexicon.has(word):
+		return _chant_lexicon[word]
+	for suffix in CHANT_SUFFIXES:
+		if word.length() <= suffix.length() + 2 or not word.ends_with(suffix):
+			continue
+		var base = word.substr(0, word.length() - suffix.length())
+		if _chant_lexicon.has(base):
+			return _chant_lexicon[base]
+		if _chant_lexicon.has(base + "e"):
+			return _chant_lexicon[base + "e"]
+		if base.length() > 2 and base[base.length() - 1] == base[base.length() - 2]:
+			var undoubled = base.substr(0, base.length() - 1)
+			if _chant_lexicon.has(undoubled):
+				return _chant_lexicon[undoubled]
+	return {}
+
+func _interpret_chant(text: String) -> Dictionary:
+	# Local §7 interpreter: compose one {motion, action, modes, dials} recipe from every known
+	# word in the chant (sum of fragments, then the per-chant caps). Returns the recipe plus the
+	# matched / unmatched word lists for telemetry. The output is the same raw-recipe shape
+	# /chant returns, so the soul multiplier in _apply_recipe treats both paths alike.
+	var recipe = {}
+	var matched = []
+	var unmatched = []
+	var negate = false
+	var boost = 1.0
+	var cleaned = text.to_lower().replace("'", "").replace("’", "")
+	var words = RegEx.create_from_string("[a-z]+")
+	for m in words.search_all(cleaned):
+		var word = m.get_string()
+		if word in CHANT_NEGATORS:
+			negate = not negate
+			continue
+		if word in CHANT_INTENSIFIERS:
+			boost = CHANT_INTENSIFY
+			continue
+		if word in CHANT_STOPWORDS:
+			continue
+		var frag = _chant_lookup(word)
+		if frag.is_empty():
+			unmatched.append(word)
+			continue
+		var scale = boost * (-1.0 if negate else 1.0)
+		for layer in frag:
+			if not recipe.has(layer):
+				recipe[layer] = {}
+			for key in frag[layer]:
+				recipe[layer][key] = recipe[layer].get(key, 0.0) + frag[layer][key] * scale
+		matched.append(("not " if negate else "") + word)
+		negate = false
+		boost = 1.0
+	for layer in recipe:
+		var cap = CHANT_MAX_DIAL if layer == "dials" else CHANT_MAX_WEIGHT
+		for key in recipe[layer]:
+			recipe[layer][key] = clamp(recipe[layer][key], -cap, cap)
+	return { "recipe": recipe, "matched": matched, "unmatched": unmatched }
 
 # --- Per-dot CCE tick ---
 
@@ -2334,6 +2649,14 @@ func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_
 		cce = _deep_copy_cce(preset_cce)
 	elif parent != null and dot_data.has(parent):
 		var parent_cce = dot_data[parent]["cce"]
+		# Border birth (BIRTH_BLEND, bible §12): if the parent is in contact with foreign dots,
+		# the child inherits from a scratch copy mixed toward their mean. The parent's own CCE
+		# is untouched; dilution below then applies to the mixed source.
+		var foreign_mean = _foreign_cce_mean_near(parent, colony)
+		if not foreign_mean.is_empty():
+			parent_cce = _deep_copy_cce(parent_cce)
+			_blend_toward(parent_cce, foreign_mean, BIRTH_BLEND)
+			_tally_blend(colony, "births")
 		# Birth-time dilution: children get dilution * parent weight, applied once here
 		# (between generations), never again during the dot's life. The rate is the colony's
 		# soul-modulated dilution (_dilution_for_colony) — high soul -> near 1.0 (persists),
@@ -2346,9 +2669,12 @@ func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_
 			for key in cce[layer]:
 				if parent_cce[layer].has(key):
 					cce[layer][key] = parent_cce[layer][key] * dilution
+		# Dials dilute toward their NEUTRAL_CCE baseline, not toward 0 (bible §9: drift is toward
+		# neutral). The verb/mode layers above have a 0.0 baseline, so plain scaling already is.
 		for key in cce["dials"]:
 			if parent_cce["dials"].has(key):
-				cce["dials"][key] = parent_cce["dials"][key] * dilution
+				var base = NEUTRAL_CCE["dials"].get(key, 0.0)
+				cce["dials"][key] = base + (parent_cce["dials"][key] - base) * dilution
 
 	dot_data[dot] = { "age": 0, "cce": cce, "colony": colony, "build_banners_used": {}, "dot_id": _next_dot_id, "pending_observe": null, "collect_lock": null }
 	_next_dot_id += 1
@@ -2446,16 +2772,24 @@ func _tick_surface_marks() -> void:
 
 func _focus_on_colony():
 	var center = _compute_colony_center(LOCAL_COLONY)
-	orbit_yaw = atan2(center.x, center.z)
-	orbit_pitch = asin(clamp(center.y, -1.0, 1.0))
+	if center.length_squared() < PARALLEL_EPSILON:
+		return
+	var dir = center.normalized()
+	# Face the colony with world-up as the starting "up" (same framing as before); after this,
+	# drag is free to roll the view anywhere.
+	var up = Vector3.UP if abs(dir.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
+	orbit_basis = Basis.looking_at(-dir, up)
+
+func _orbit(relative: Vector2) -> void:
+	# Drag rotates about the camera's local up (horizontal drag) and local right (vertical
+	# drag). Same drag directions as the old yaw/pitch orbit; orthonormalized against drift.
+	var yaw = Basis(Vector3.UP, -relative.x * ROTATE_SPEED)
+	var pitch = Basis(Vector3.RIGHT, -relative.y * ROTATE_SPEED)
+	orbit_basis = (orbit_basis * yaw * pitch).orthonormalized()
 
 func _update_camera():
-	var pitch_clamped = clamp(orbit_pitch, -PI / 2.0 + 0.05, PI / 2.0 - 0.05)
-	var x = zoom_distance * cos(pitch_clamped) * sin(orbit_yaw)
-	var y = zoom_distance * sin(pitch_clamped)
-	var z = zoom_distance * cos(pitch_clamped) * cos(orbit_yaw)
-	camera.position = Vector3(x, y, z)
-	camera.look_at(Vector3.ZERO, Vector3.UP)
+	camera.transform.basis = orbit_basis
+	camera.position = orbit_basis.z * zoom_distance
 
 # --- Input ---
 
@@ -2470,8 +2804,7 @@ func _input(event):
 				_zoom(ZOOM_SPEED)
 
 	if event is InputEventMouseMotion and is_orbiting:
-		orbit_yaw -= event.relative.x * ROTATE_SPEED
-		orbit_pitch += event.relative.y * ROTATE_SPEED
+		_orbit(event.relative)
 
 	if event is InputEventScreenTouch:
 		if event.pressed:
@@ -2489,8 +2822,7 @@ func _input(event):
 	if event is InputEventScreenDrag:
 		touch_positions[event.index] = event.position
 		if touch_positions.size() == 1 and single_touch_active:
-			orbit_yaw -= event.relative.x * ROTATE_SPEED
-			orbit_pitch += event.relative.y * ROTATE_SPEED
+			_orbit(event.relative)
 		elif touch_positions.size() >= 2:
 			single_touch_active = false
 			var keys = touch_positions.keys()

@@ -2305,7 +2305,7 @@ Soul-weighted chant potency is live (S.c, first canon call): soul multiplies a c
 
 ---
 
-## 2026-07-28 — CURRENT STATE. Soul loop closed: standing soul drives dilution. **Hydration entry — START HERE.** (WIP on branch, UNMERGED.)
+## 2026-07-28 — Soul loop closed: standing soul drives dilution. **Hydration entry — SUPERSEDED by 2026-10-23 below.** (Committed `fb611ec` on 2026-10-23; still unmerged, still not playtested.)
 
 Fresh session: read THIS entry + `RECONCILIATION.md` (S.c "Update 2026-07-28" + S.a) + `Noema_Design_Bible_v0.4.docx` before design work.
 
@@ -2332,3 +2332,36 @@ Overturns S.c's "**spent, not standing**" bullet. Its two objections are answere
 
 ### Constants added/removed in `main.gd`
 Added: `DILUTION_MIN`, `DILUTION_MAX`, `SOUL_DILUTION_HALF`, `SOUL_DECAY_RATE`. Removed: `CCE_DILUTION`, `SOUL_CHANT_DRAW`. New funcs: `_dilution_for_colony`, `_dilution_snapshot`, `_tick_soul_decay`.
+
+---
+
+## 2026-10-23 — CURRENT STATE. Chants compose (baked lexicon); CCE blending built. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED.)
+
+Fresh session: read THIS entry + `RECONCILIATION.md` (S.a, S.b, T1.c) + `Noema_Design_Bible_v0.4.docx` before design work.
+
+### Git
+Branch **`session/2026-07-28-soul-dilution`**, pushed to `origin` (Dustan's go-ahead). Two commits on top of `main`'s `bce91b8`: soul-dilution (`fb611ec`), then this session's chant + blending + dial-dilution fix + free camera. **Not merged, no PR yet, nothing playtested.**
+
+### Decisions (Dustan, this session)
+- **Chant engine = baked word table, not a runtime LLM.** Runtime LLM cost was the concern (server GPU, or a 400MB–1GB on-device model that the server would also have to trust). The table is an LLM's judgment baked in at authoring time: zero runtime cost, ships with the game. The same `_interpret_chant` seam can later send unknown words to a server LLM with a shared cache.
+- **Blending = contact exchange + border births.** "Reproduction and value sharing": bible §12 contact swap, plus children born at a border inherit a partly foreign culture. Child stays in the parent's colony.
+
+### What changed in `main.gd`
+1. **Chant interpreter.** `_process_chant_locally` no longer does a whole-string exact lookup. `_interpret_chant` lowercases, strips apostrophes, splits on letters, and sums a recipe fragment for every known word; per-chant caps (`CHANT_MAX_WEIGHT` = 2×`CHANT_WEIGHT`, `CHANT_MAX_DIAL` = 0.15) stop a repeated word from stacking. `CHANT_LEXICON` = 30 synonym groups / 401 words covering every verb, move-mode and dial; `CHANT_RECIPES` (52 hand-tuned words) is kept and wins on overlap. Lookup strips -s/-es/-ed/-ing/-er/-ers/-ly (re-adds a dropped e, undoubles a consonant). Negators flip the next known word (`never fight` lowers attack; they toggle, so `never stop fighting` raises it); intensifiers (`very`, `forever`…) scale it ×1.5; stopwords drop silently. Peace words carry a NEGATIVE attack delta (a new push, not an undo). The bible's §5.3 examples now parse (`wander far`, `sharp bladed warriors`, `build tall toward the moon`). **`build` is now chantable** (closes the T1.a successor gap). Single-word chants apply exactly as before.
+2. **Telemetry `chant_parsed`** record per player chant: `text`, `matched`, `unmatched`. The `unmatched` list is the to-do list for growing the table.
+3. **Contact blending** (`_tick_blending`, after `_tick_all_dots`): living dots from different colonies within `BLEND_RADIUS` = 2 cells (5×5) step toward each other by `BLEND_RATE` = 0.01 of the gap per pair per tick, across motion/action/modes/dials. Sum-preserving. Radius is 2, not 1, because drift refuses to enter a foreigner's 3×3 — radius 1 would only see combat fronts. Cells are bucketed and scanned forward-half only, so each pair is visited once (~13 lookups per occupied cell, not 25 per dot).
+4. **Border births** (`_create_dot`): if the parent has living foreign dots within `BLEND_RADIUS`, the child inherits from a scratch copy mixed `BIRTH_BLEND` = 0.25 toward their mean CCE, then diluted at its own colony's soul rate.
+5. **Telemetry snapshot `blend`**: per colony `{contacts, births}`, ACCUMULATED since the previous snapshot (cleared after writing).
+6. **Free camera orbit** (Dustan): the yaw/pitch orbit with its ±87° pitch clamp and fixed world-up is replaced by a trackball `orbit_basis` that drag rotates about the camera's own axes (`_orbit`). No limit, rolls over the poles; "north up" is no longer enforced. Drag directions unchanged; `_focus_on_colony` still frames the colony north-up at spawn. No roll gesture (drag only, by choice).
+
+### Verify
+`validate_script res://main.gd` → compiles clean. **Not run in Godot.** Offline dry-run of the word matcher on sample chants behaved as intended (no duplicate words across tables).
+- Chant: type a phrase in the dev bar; the Output panel prints matched/unmatched; `chant_applied` shows the composed recipe.
+- Blending: slice telemetry from the last `run_start`; `blend.contacts` should be non-zero once colonies meet, `blend.births` smaller. Watch for colonies' `primitives` mixes drifting toward their neighbours'. With `TEST_FIELD_DISCRETE_COLORS = true` dots are coloured by colony, so blending is invisible on screen; set it `false` to see CCE tint shift at borders.
+- **Perf watch:** blending adds one bucketed neighbourhood pass per tick. If ticks hitch at full field population, raise the interval or lower `BLEND_RADIUS`.
+
+### Open / next
+1. ~~**Dials dilute toward 0, not their neutral baseline.**~~ **FIXED same session (Dustan's OK).** `_create_dot` used to multiply dials by the dilution rate, so `range`/`intensity` (baseline 0.5) shrank every generation (0.5 → 0.35 at soul 0) and dragged reproduce chance down with intensity. Dials now dilute toward their `NEUTRAL_CCE` value: `child = base + (parent − base) · dilution` (bible §9). Verb/mode layers unchanged — their baseline is 0.0, so plain scaling already was toward neutral.
+2. Playtest-tune soul-dilution (from 07-28) and blending together: `BLEND_RATE`, `BIRTH_BLEND`, `BLEND_RADIUS` are placeholders.
+3. Grow the lexicon from `unmatched`. `frequency`/`affinity` dials are still unbuilt, so words like `rapid`, `swarm`-as-frequency and `toward X` have no direct target.
+4. Still open from before: mark → motif (T1.e step 3); combat-defense balance.
