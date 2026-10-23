@@ -1,6 +1,6 @@
 # NOEMA — Bible ↔ Code Reconciliation
 
-**Status:** draft for review · created 2026-07-21 · restructured 2026-07-21 around the three-tier spine · updated 2026-07-24 (Tier 1 recipes; first canon call — S.c soul) · updated 2026-07-25 (T2.c RESOLVED — linear selection; T1.e canon call + shipped — Tier-1 move-mode collapse; three-tier build roadmap) · all merged to `main` via PR #1 (2026-07-26) · author: Claude Code (planning+implementation layer)
+**Status:** draft for review · created 2026-07-21 · restructured 2026-07-21 around the three-tier spine · updated 2026-07-24 (Tier 1 recipes; first canon call — S.c soul) · updated 2026-07-25 (T2.c RESOLVED — linear selection; T1.e canon call + shipped — Tier-1 move-mode collapse; three-tier build roadmap) · all merged to `main` via PR #1 (2026-07-26) · updated 2026-07-28 (S.c revised — soul becomes a standing level driving DILUTION; chant-draw retired; passive decay added; dilution re-enabled soul-modulated — branch `session/2026-07-28-soul-dilution`, unmerged) · author: Claude Code (planning+implementation layer)
 **Sources:** `Noema_Design_Bible_v0.4.docx` (design canon) vs. `main.gd` (current code) + `DEVNOTES.md` (tactical log).
 
 ## Why this document exists
@@ -163,7 +163,8 @@ Audited against the intent above:
 **Bible:** generational dilution (0.7) is *"the most important tuning variable"* — silence → drift → cultural death. CCE blending (passive contamination by proximity) is a central theme. **Code:** dilution is **disabled** (`full_inheritance = true`, testing posture); blending is **unbuilt**.
 **Assessment:** these two *are* the bible's thematic heart, and the game currently runs with neither. Re-enabling dilution is a near-instant flag flip that transforms how the sim feels; blending is medium work.
 **Rec: BIBLE — re-enable dilution once Tier 1 vocabulary is reachable enough for drift to be visible; build blending after. Cost: S (dilution) / M (blending).**
-`DECISION: ______`
+**⮑ Update 2026-07-28: dilution is now RE-ENABLED** — but not as a flat 0.7 flag. It arrived through S.c as a *soul-modulated* rate (`_dilution_for_colony`): `full_inheritance` is off on the reproduce path, and the rate rises with soul. So dilution and the soul economy are now one mechanism, not two. Blending remains unbuilt. Branch `session/2026-07-28-soul-dilution`, unmerged.
+`DECISION: BIBLE — dilution re-enabled (soul-modulated, via S.c) 2026-07-28. Blending still deferred.`
 
 ### S.b — the server / LLM / multiplayer spine (bible identity; unbuilt) ⚠️ launch milestone
 **Bible:** persistent MP, ~10k colonies, chants interpreted server-side by an LLM (Ollama), DB persistence, active/passive ticks, `/chant` `/sync` `/session`. **Code:** local-only prototype; `USE_SERVER = false`, "server not implemented"; chants from a local dictionary; no LLM/DB/MP/passive ticks.
@@ -208,6 +209,14 @@ Shipped values (all placeholders): gain 4.0, half 100, draw 0.25 → 0 soul = 1.
 
 `DECISION: CODE — soul + speck economy and soul-weighted chant potency are canon; write both into bible v0.5 (new "Resources and Soul" section) and strike the §16 resource question. Cost: shipped (S) + M (bible v0.5 section).`
 
+**⮑ Update 2026-07-28 (Dustan) — soul becomes a STANDING level; the chant-draw is retired; soul now drives DILUTION.** This closes the soul loop by making low soul *hurt* (the question this whole section deferred). The new model, on branch `session/2026-07-28-soul-dilution`:
+- **The chant no longer spends soul.** `SOUL_CHANT_DRAW` is removed. The potency multiplier (`SOUL_CHANT_GAIN/HALF`) **stays** — chants still bite harder with more soul — but soul is no longer drawn down per chant.
+- **Soul modulates the dilution rate.** Generational dilution is re-enabled (`_spawn_dot_near` no longer forces `full_inheritance`), but the rate is soul-driven: `dilution = DILUTION_MIN + (DILUTION_MAX − DILUTION_MIN) · soul/(soul + SOUL_DILUTION_HALF)` (0.70 at zero soul → asymptote 1.0). High-soul cultures persist; soul-starved ones drift toward neutral. **This is the §13 mechanism made structural** — raiders never gather → low soul → fast drift → attack lean erodes and can't be rebuilt.
+- **Passive soul decay** (`SOUL_DECAY_RATE = 0.01`/tick, proportional) makes soul track *recent* gathering, not a lifetime hoard — the anti-stratification knob and soul's new "sink." Not a spend; background erosion.
+- **This reverses the "Spent, not standing" bullet above.** That call's two arguments against standing soul: the **no-sink** concern is answered (dilution is soul's purpose; decay is its drain); the **stratification** concern is answered by decay (a colony that stops gathering slides back). Both bullets ("Spent, not standing" + the §5.4 4× "shout" divergence) still apply to the *potency* half, which is unchanged.
+- **New tuning surface (needs MULTIPLE runs):** the band where low soul actually loses ground to dilution but high soul holds is governed by `DILUTION_MIN`, `SOUL_DILUTION_HALF`, `SOUL_DECAY_RATE`, and the autochant refill rate together. `SOUL_DECAY_RATE` is the most likely to bite. Telemetry now emits per-colony `dilution` in the snapshot for reading the refill-vs-drift contest.
+`DECISION: CODE (revised) — soul is a standing level driving potency + dilution, decaying passively; chant-draw removed. Shipped to branch, unmerged, awaiting playtest tuning. Fold into the same v0.5 "Resources and Soul" section.`
+
 ---
 
 ## Bible's own open questions (§16) — still unresolved in the doc
@@ -243,6 +252,6 @@ Carry these into the roadmap: CCE-blending proximity radius & rate · ~~resource
 | T2.b | banner gating too shallow | | |
 | T2.c | selection model (NS softmax vs bible linear) | **BIBLE (linear now)** | RESOLVED 2026-07-25; `SELECTION_SOFTMAX` flag, softmax deferred to Tier 2/3 capstone; three-tier roadmap added |
 | T3.a | monuments & wall lines | | follows T2.a |
-| S.a | dilution + blending | | identity; parked by Dustan |
+| S.a | dilution + blending | **dilution re-enabled** | 2026-07-28: dilution ON, soul-modulated rate (via S.c); blending still unbuilt |
 | S.b | server / LLM / MP spine | | launch milestone; contract alignment done |
-| S.c | soul economy + chant potency | **CODE** | 2026-07-24, **first call made**; shipped, needs tuning |
+| S.c | soul economy + chant potency | **CODE (revised 07-28)** | 07-24 first call; 07-28 revised — standing soul drives dilution, draw removed, decay added; branch unmerged, needs tuning |

@@ -13,25 +13,40 @@ var tick_timer = 0.0
 
 const USE_SERVER = false
 const DOT_LIFETIME = 100
-# Children inherit this fraction of parent CCE at birth (between generations only,
-# never applied within a dot's lifetime). Currently inert: _spawn_dot_near passes
-# full_inheritance=true (testing posture, DEVNOTES 2026-05-12 "flip when ready").
-const CCE_DILUTION = 0.7
+# Generational dilution, SOUL-MODULATED (2026-07-28). At birth a child inherits parent CCE
+# scaled by a rate that rises with the colony's soul (see _dilution_for_colony): a well-
+# gathered culture passes on nearly its full CCE and persists across generations; a soul-
+# starved one passes on a heavily-diluted copy and drifts toward neutral. This is the bible's
+# §9 dilution with its rate governed by soul instead of a constant — the mechanism that makes
+# low soul HURT (§13): raiders never gather -> low soul -> fast drift -> attack lean erodes
+# and cannot be rebuilt. Applied between generations only, never within a dot's lifetime.
+#   dilution = DILUTION_MIN + (DILUTION_MAX - DILUTION_MIN) * soul / (soul + SOUL_DILUTION_HALF)
+# soul 0 -> 0.70 (harsh, the bible's default), 100 -> 0.85, 300 -> ~0.93, asymptote 1.0.
+# PLACEHOLDER values — first-pass guesses, expect a tuning pass.
+const DILUTION_MIN = 0.7           # inheritance rate at zero soul (the bible's default rate)
+const DILUTION_MAX = 1.0           # inheritance rate as soul -> infinity (full persistence)
+const SOUL_DILUTION_HALF = 100.0   # soul at which half the min->max range is recovered
 const CHANT_WEIGHT = 0.08
 const CHANT_FILE = "res://chant.json"
 
-# Soul-weighted chant potency. A colony's accumulated soul multiplies the CCE delta a
-# chant writes, and the chant then draws the pool down — so potency is continuously
-# re-earned by gathering, never permanently owned. Consumption is through the chant
-# itself; there is deliberately no spend control, because the chant is the player's only
-# input (bible §4).
+# Soul-weighted chant potency. A colony's accumulated soul multiplies the CCE delta a chant
+# writes. Soul is NOT spent by chanting (2026-07-28): it is a standing per-colony level that
+# ALSO governs the dilution rate (see DILUTION_MIN / _dilution_for_colony) and slowly
+# evaporates (SOUL_DECAY_RATE). Potency is therefore a level — re-earned by continued
+# gathering, eroded by silence — not a balance drawn down per chant. (This supersedes the S.c
+# "spent, not standing" call; the no-sink concern it raised is answered by decay + dilution.)
 #   mult = 1.0 + SOUL_CHANT_GAIN * (soul / (soul + SOUL_CHANT_HALF))
 # 0 soul -> 1.0x (a broke colony still chants, just faintly), 100 -> 3.0x, 300 -> ~4.0x,
 # asymptote 5.0x. Saturating on purpose: no amount of hoarding buys an instant culture.
 # PLACEHOLDER values — first-pass guesses, expected to need a tuning pass.
 const SOUL_CHANT_GAIN = 4.0        # max multiplier bonus above 1.0
 const SOUL_CHANT_HALF = 100.0      # soul at which half the bonus is reached
-const SOUL_CHANT_DRAW = 0.25       # fraction of the pool consumed per chant
+# Passive soul evaporation per tick (proportional). Makes soul track RECENT gathering rather
+# than a lifetime hoard: a colony that stops gathering slides back toward fast dilution, and
+# the permanent stratification a purely-accumulating standing resource would cause is avoided.
+# NOT a spend — no action pays it; it is background erosion. Set to 0.0 to disable.
+# PLACEHOLDER — the tuning-sensitive knob.
+const SOUL_DECAY_RATE = 0.01
 
 # Primitive selection model. See RECONCILIATION.md T2.c + DEVNOTES 2026-07-25 (cont.).
 #   false (current) = LINEAR weighted pool — the bible §5.1 model: P(k) = weight_k / Σ weight.
@@ -562,6 +577,9 @@ func _process(delta):
 		_primitive_counts.clear()
 		_move_mode_counts.clear()
 		_tick_all_dots()
+		# Soul decay runs AFTER _tick_all_dots so this tick's gathering is credited before
+		# erosion applies (see SOUL_DECAY_RATE).
+		_tick_soul_decay()
 		_update_hud()
 		# Post-tick state snapshot (after all mutations resolve). Captures ALL colonies.
 		if _tick_num % TELEMETRY_SNAPSHOT_INTERVAL == 0:
@@ -570,6 +588,7 @@ func _process(delta):
 				"tick": _tick_num,
 				"pop": colony_counts.duplicate(),
 				"soul": soul_pool.duplicate(),
+				"dilution": _dilution_snapshot(),
 				"blocks": block_counts.duplicate(),
 				"combat_active": combat_clusters.size(),
 				"combat_locked": combat_locked.size(),
@@ -639,19 +658,45 @@ func _apply_recipe(recipe: Dictionary, colony: int = LOCAL_COLONY):
 				if cce["dials"].has(key):
 					cce["dials"][key] = clamp(cce["dials"][key] + recipe["dials"][key] * mult, 0.0, 1.0)
 		_update_dot_color(dot)
-	# Draw down the pool AFTER applying, so this chant is paid for at the rate it bought.
-	var soul_after = int(max(0.0, soul - soul * SOUL_CHANT_DRAW))
-	soul_pool[colony] = soul_after
+	# Soul is NOT drawn down (2026-07-28): it is a standing level feeding potency AND the
+	# dilution rate, not a per-chant cost. It falls only via passive decay (_tick_soul_decay),
+	# never via chanting. soul_before == soul_after here; both kept for telemetry stability.
 	_telemetry({
 		"type": "chant_applied",
 		"tick": _tick_num,
 		"colony": colony,
 		"soul_before": int(soul),
 		"mult": mult,
-		"soul_after": soul_after,
+		"soul_after": int(soul),
 		"recipe": recipe
 	})
 	_update_hud()
+
+func _dilution_for_colony(colony: int) -> float:
+	# Soul-modulated inheritance rate: DILUTION_MIN at zero soul, rising toward DILUTION_MAX as
+	# soul grows. A well-gathered colony passes on nearly its full CCE (culture persists); a
+	# soul-starved one passes on a heavily-diluted copy (culture drifts toward neutral). This is
+	# what makes low soul HURT — see the DILUTION_MIN comment block.
+	var soul = float(soul_pool.get(colony, 0))
+	var f = soul / (soul + SOUL_DILUTION_HALF)
+	return DILUTION_MIN + (DILUTION_MAX - DILUTION_MIN) * f
+
+func _dilution_snapshot() -> Dictionary:
+	# Per-colony current dilution rate, for telemetry — lets a run be read as the refill-vs-
+	# drift contest it is. Keyed like the other snapshot dicts (colony id -> value).
+	var out = {}
+	for c in known_colonies.keys():
+		out[c] = _dilution_for_colony(c)
+	return out
+
+func _tick_soul_decay() -> void:
+	# Passive proportional evaporation of every colony's soul pool (see SOUL_DECAY_RATE). Runs
+	# once per tick after gathering is credited. NOT a spend — background erosion that makes
+	# soul reflect recent gathering. int() truncates toward zero, so tiny pools fade quickly.
+	if SOUL_DECAY_RATE <= 0.0:
+		return
+	for c in soul_pool.keys():
+		soul_pool[c] = int(soul_pool[c] * (1.0 - SOUL_DECAY_RATE))
 
 func _tick_autochant() -> void:
 	# Playtest-field CCE driver: every AUTOCHANT_INTERVAL ticks each surviving colony
@@ -2262,8 +2307,10 @@ func _spawn_dot_near(parent: Node3D, colony: int = LOCAL_COLONY):
 	var nudge = (tangent * cos(angle) + bitangent * sin(angle)) * SPAWN_NUDGE
 	var new_dir = (dir + nudge).normalized()
 	if not _is_cell_occupied(new_dir) and not _is_blocked_by_foreign(new_dir, colony):
-		# full_inheritance=true here bypasses CCE_DILUTION (testing posture; see CCE_DILUTION).
-		_create_dot(new_dir, parent, colony, {}, true)
+		# Newborns dilute at the colony's soul-modulated rate (_dilution_for_colony); the flat
+		# full_inheritance bypass is retired (2026-07-28 soul-dilution). Omitting the arg uses
+		# the false default, so _create_dot runs the dilution branch.
+		_create_dot(new_dir, parent, colony, {})
 
 func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_cce: Dictionary = {}, full_inheritance: bool = false) -> Node3D:
 	var dot = MeshInstance3D.new()
@@ -2287,10 +2334,12 @@ func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_
 		cce = _deep_copy_cce(preset_cce)
 	elif parent != null and dot_data.has(parent):
 		var parent_cce = dot_data[parent]["cce"]
-		# Birth-time dilution: children get CCE_DILUTION * parent weight, applied once
-		# here (between generations), never again during the dot's life. full_inheritance
-		# bypasses it, and is currently always true via _spawn_dot_near.
-		var dilution = 1.0 if full_inheritance else CCE_DILUTION
+		# Birth-time dilution: children get dilution * parent weight, applied once here
+		# (between generations), never again during the dot's life. The rate is the colony's
+		# soul-modulated dilution (_dilution_for_colony) — high soul -> near 1.0 (persists),
+		# low soul -> DILUTION_MIN (drifts). full_inheritance=true still forces 1.0 for any
+		# caller that wants it, but the reproduce path (_spawn_dot_near) no longer does.
+		var dilution = 1.0 if full_inheritance else _dilution_for_colony(colony)
 		for layer in ["motion", "action", "modes"]:
 			if not cce.has(layer) or not parent_cce.has(layer):
 				continue

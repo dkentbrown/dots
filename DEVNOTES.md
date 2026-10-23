@@ -2269,7 +2269,7 @@ This commit banks the whole session stack: linear selection (T2.c), the Tier-1 m
 
 ---
 
-## 2026-07-26 — CURRENT STATE. Session arc merged to main (PR #1). **Hydration entry — START HERE.**
+## 2026-07-26 — Session arc merged to main (PR #1). **Hydration entry — SUPERSEDED by 2026-07-28 (soul-dilution) below.**
 
 Fresh session: read THIS entry + `RECONCILIATION.md` + `Noema_Design_Bible_v0.4.docx` before any design work. The four older "hydration entry" markers above are historical (superseded).
 
@@ -2301,4 +2301,34 @@ Soul-weighted chant potency is live (S.c, first canon call): soul multiplies a c
 2. **mark → motif** (T1.e step 3) — finishes the collapse; starts the Tier-3 feedback layer.
 3. **Combat defense balance** — defenders win only when they commit (0%→45%); `attack+defend` favors aggressors. Pair with #1.
 
-### Parked tuning (need MULTIPLE runs, not one): builders' build CCE weight (build dominance is weight-driven, NOT the banner mechanic); `FIELD_BASE_BIT` build + `BUILD_START_CHANCE` (map-wide block volume); a `BLOCK_MAX` cap (blocks are the one uncapped growth term). Also parked: dilution/blending (S.a), server/LLM/MP spine (S.b), affinity/frequency dials, multi-word chant parsing.
+### Parked tuning (need MULTIPLE runs, not one): builders' build CCE weight (build dominance is weight-driven, NOT the banner mechanic); `FIELD_BASE_BIT` build + `BUILD_START_CHANCE` (map-wide block volume); a `BLOCK_MAX` cap (blocks are the one uncapped growth term). Also parked: ~~dilution~~/blending (S.a — dilution now ON, see 07-28), server/LLM/MP spine (S.b), affinity/frequency dials, multi-word chant parsing.
+
+---
+
+## 2026-07-28 — CURRENT STATE. Soul loop closed: standing soul drives dilution. **Hydration entry — START HERE.** (WIP on branch, UNMERGED.)
+
+Fresh session: read THIS entry + `RECONCILIATION.md` (S.c "Update 2026-07-28" + S.a) + `Noema_Design_Bible_v0.4.docx` before design work.
+
+### Git
+On branch **`session/2026-07-28-soul-dilution`** off `main` (`bce91b8`). **NOT committed, NOT merged** — working tree dirty for review (per project rules). One file of logic (`main.gd`) + two docs (`RECONCILIATION.md`, `DEVNOTES.md`).
+
+### What changed (the "close the soul loop" decision, made this session)
+The deferred S.c question — *what makes LOW soul hurt* — is answered. Dustan's call: **soul is no longer spent; it is a standing per-colony level that drives the DILUTION rate.** Three parts:
+1. **Chant-draw removed.** `SOUL_CHANT_DRAW` gone. The potency multiplier (`SOUL_CHANT_GAIN/HALF`) **stays** — chants still bite harder with more soul — but chanting no longer draws the pool down.
+2. **Soul → dilution (the core).** Generational dilution re-enabled (`_spawn_dot_near` no longer forces `full_inheritance`), rate soul-driven via `_dilution_for_colony`: `DILUTION_MIN(0.7) + (1.0−0.7)·soul/(soul+SOUL_DILUTION_HALF(100))` → 0 soul = 0.70 (harsh drift), 100 = 0.85, asymptote 1.0. High soul → culture persists; starved → drifts to neutral. **§13 made structural:** raiders never gather → low soul → fast drift → attack lean erodes and can't be rebuilt.
+3. **Passive soul decay.** `SOUL_DECAY_RATE = 0.01`/tick, proportional, in new `_tick_soul_decay` (runs after `_tick_all_dots` so the tick's gathering lands first). Makes soul track *recent* gathering, prevents permanent stratification. Not a spend — background erosion. Set to 0.0 to disable.
+
+Self-reinforcing loop: autochant still refills each colony's lean soul-multiplied, so high-soul gatherers refill HARD **and** dilute SLOWLY (entrench); low-soul raiders refill weakly **and** dilute fast (erode).
+
+### Reverses prior canon
+Overturns S.c's "**spent, not standing**" bullet. Its two objections are answered: no-sink → dilution is soul's purpose + decay is its drain; stratification → decay makes a non-gathering colony slide back. Potency-half divergences (§5.4 4× "shout") unchanged. Recorded in RECONCILIATION S.c "Update 2026-07-28".
+
+### Verify
+`validate_script res://main.gd` → compiles clean. **Not yet run in Godot.** Telemetry now emits per-colony **`dilution`** in the `snapshot` record (alongside `soul`) — read the refill-vs-drift contest from it. **NEEDS MULTIPLE RUNS:** the band where low soul loses ground but high soul holds is set by `DILUTION_MIN`, `SOUL_DILUTION_HALF`, `SOUL_DECAY_RATE`, and autochant refill *together*. `SOUL_DECAY_RATE` is the knob most likely to bite (int-truncation makes tiny pools fade fast).
+
+### NEXT
+1. **Playtest-tune this** — run TEST_FIELD, slice telemetry from last `run_start`, watch per-colony `soul` + `dilution` + `primitives`: do gatherers hold their lean while raiders' attack weight erodes? Adjust the four levers above.
+2. Then: mark → motif (T1.e step 3); combat-defense balance (still open).
+
+### Constants added/removed in `main.gd`
+Added: `DILUTION_MIN`, `DILUTION_MAX`, `SOUL_DILUTION_HALF`, `SOUL_DECAY_RATE`. Removed: `CCE_DILUTION`, `SOUL_CHANT_DRAW`. New funcs: `_dilution_for_colony`, `_dilution_snapshot`, `_tick_soul_decay`.
