@@ -2305,7 +2305,7 @@ Soul-weighted chant potency is live (S.c, first canon call): soul multiplies a c
 
 ---
 
-## 2026-07-28 — Soul loop closed: standing soul drives dilution. **Hydration entry — SUPERSEDED by 2026-10-23 below.** (Committed `fb611ec` on 2026-10-23; still unmerged, still not playtested.)
+## 2026-07-28 — Soul loop closed: standing soul drives dilution. **Hydration entry — SUPERSEDED by 2026-10-23 below.** (Committed `fb611ec` on 2026-10-23; unmerged. Playtested alone 2026-10-08, run `1791475804`, 573 ticks — and with blending 2026-10-23, see that entry's Playtest section.)
 
 Fresh session: read THIS entry + `RECONCILIATION.md` (S.c "Update 2026-07-28" + S.a) + `Noema_Design_Bible_v0.4.docx` before design work.
 
@@ -2340,7 +2340,7 @@ Added: `DILUTION_MIN`, `DILUTION_MAX`, `SOUL_DILUTION_HALF`, `SOUL_DECAY_RATE`. 
 Fresh session: read THIS entry + `RECONCILIATION.md` (S.a, S.b, T1.c) + `Noema_Design_Bible_v0.4.docx` before design work.
 
 ### Git
-Branch **`session/2026-07-28-soul-dilution`**, pushed to `origin` (Dustan's go-ahead). Two commits on top of `main`'s `bce91b8`: soul-dilution (`fb611ec`), then this session's chant + blending + dial-dilution fix + free camera. **Not merged, no PR yet, nothing playtested.**
+Branch **`session/2026-07-28-soul-dilution`**, pushed to `origin` (Dustan's go-ahead). Two commits on top of `main`'s `bce91b8`: soul-dilution (`fb611ec`), then this session's chant + blending + dial-dilution fix + free camera. **Not merged.** PR **dkentbrown/dots#2** open against `main`. Playtested — see the Playtest section below.
 
 ### Decisions (Dustan, this session)
 - **Chant engine = baked word table, not a runtime LLM.** Runtime LLM cost was the concern (server GPU, or a 400MB–1GB on-device model that the server would also have to trust). The table is an LLM's judgment baked in at authoring time: zero runtime cost, ships with the game. The same `_interpret_chant` seam can later send unknown words to a server LLM with a shared cache.
@@ -2355,13 +2355,34 @@ Branch **`session/2026-07-28-soul-dilution`**, pushed to `origin` (Dustan's go-a
 6. **Free camera orbit** (Dustan): the yaw/pitch orbit with its ±87° pitch clamp and fixed world-up is replaced by a trackball `orbit_basis` that drag rotates about the camera's own axes (`_orbit`). No limit, rolls over the poles; "north up" is no longer enforced. Drag directions unchanged; `_focus_on_colony` still frames the colony north-up at spawn. No roll gesture (drag only, by choice).
 
 ### Verify
-`validate_script res://main.gd` → compiles clean. **Not run in Godot.** Offline dry-run of the word matcher on sample chants behaved as intended (no duplicate words across tables).
+`validate_script res://main.gd` → compiles clean. Offline dry-run of the word matcher on sample chants behaved as intended (no duplicate words across tables). **Playtested** — see the next section.
 - Chant: type a phrase in the dev bar; the Output panel prints matched/unmatched; `chant_applied` shows the composed recipe.
 - Blending: slice telemetry from the last `run_start`; `blend.contacts` should be non-zero once colonies meet, `blend.births` smaller. Watch for colonies' `primitives` mixes drifting toward their neighbours'. With `TEST_FIELD_DISCRETE_COLORS = true` dots are coloured by colony, so blending is invisible on screen; set it `false` to see CCE tint shift at borders.
 - **Perf watch:** blending adds one bucketed neighbourhood pass per tick. If ticks hitch at full field population, raise the interval or lower `BLEND_RADIUS`.
 
+### Playtest 2026-10-23 — run `1792770174`, 1,694 ticks (~28 min), TEST_FIELD, all of the above
+(Two earlier runs today, `1792769713`/`1792769887`, stopped at t20/t28 — before first contact, no chants. Ignore them.)
+
+**Chants — all as designed.** 5 typed into the dev bar (all applied to colony 0, soul 0 → mult 1.0):
+- `uild tall toward the moon` (typo) → matched tall, moon; `uild` logged unmatched; partial recipe still applied.
+- `build tall toward the moon` → build +0.16 (hit `CHANT_MAX_WEIGHT`), spiral_path +0.04, range +0.15 (hit `CHANT_MAX_DIAL`).
+- `never stop fighting` → negators cancelled → attack +0.08, intensity +0.05.
+- `gather the souls of the living` → gather/observe +0.16, reproduce +0.08 (`living` → live).
+- `Tenla` → nothing matched, nothing applied, logged unmatched. Pasted curly quotes were ignored.
+
+**Blending — active and meaningful.** First contact t49; ~869k contact pair-ticks and 2,732 border births over the run.
+- **A culture outlived its colony.** Confront's gather share rose 0.06 → 0.28 while it bordered the gatherers (t1–500), peaking as the gatherers collapsed (pop 88 at t500, extinct t764). Cohesive's gather then rose to 0.21 (t800–1100) as confront's fell — apparently relayed on — and both were back at the 0.08 field baseline by ~t1500. The gatherers' habit persisted ~700 ticks after their last dot (t764 → ~t1500): the bible's core question, visible in data.
+- **Identity held.** The survivors' move-modes stayed distinct at the end (cohesive 0.64 cohesion, dispersive 0.80 dispersion, confront 0.82 confront); cohesive picked up 0.20 dispersion. Current `BLEND_RATE`/`BIRTH_BLEND`/`BLEND_RADIUS` look reasonable — no change recommended yet.
+
+**Soul / dilution — works mechanically.** Dilution spanned 0.70–0.85. Soul plateaus ~100–113 (decay vs inflow); only colonies that actually gather get there. The survivors' late soul rise (t800+) most likely reflects fewer colonies competing for specks, not culture.
+
+**Survival — decided by the test harness, not culture (corrects the 10-23 guess that the dial bug drove the die-off).** Survivors at the 500 cap continuously from t1358: cohesive, dispersive, confront. All 7 others extinct (builders t373, bulwark t536, warband t720, spiralers t742, gatherers t764, markers t908, movers t1320). Mechanism: `_tick_autochant` re-chants each colony's lean every 5 ticks. A specialist lean raises a TOP-LEVEL verb (move, mark_surface, gather, build, spiral_path; attack/defend after t50), which under linear selection crowds `reproduce` out of the pool — movers fell from 0.12 to ≤0.01 reproduce share. The three survivors' leans raise only a MOVE-MODE, which sits under `move` and never competes, so their reproduce share held ~0.23. Movers had soul ~100 / dilution 0.85, so their culture held — which is exactly what killed them (the bible's "Dying Wanderers" ECB). The same pattern appears in the 10-08 run. Because lean shape decides survival, this run can't show whether the dial-dilution fix changed population outcomes.
+
+**Not measurable from telemetry:** tick hitching / perf. Ask Dustan.
+
 ### Open / next
 1. ~~**Dials dilute toward 0, not their neutral baseline.**~~ **FIXED same session (Dustan's OK).** `_create_dot` used to multiply dials by the dilution rate, so `range`/`intensity` (baseline 0.5) shrank every generation (0.5 → 0.35 at soul 0) and dragged reproduce chance down with intensity. Dials now dilute toward their `NEUTRAL_CCE` value: `child = base + (parent − base) · dilution` (bible §9). Verb/mode layers unchanged — their baseline is 0.0, so plain scaling already was toward neutral.
-2. Playtest-tune soul-dilution (from 07-28) and blending together: `BLEND_RATE`, `BIRTH_BLEND`, `BLEND_RADIUS` are placeholders.
+2. **Harness design question (needs Dustan):** the test field's autochant leans decide who survives (see Playtest). Either give specialist leans a reproduce share (as warband/bulwark's neutral lean has) so the field tests culture rather than lean shape, or keep it as intended — a monoculture that starves its own reproduction dies, and a real player who chants only one thing will hit the same wall.
+2b. Blending and soul-dilution values are still placeholders, but the 10-23 run gives no reason to move them yet.
 3. Grow the lexicon from `unmatched`. `frequency`/`affinity` dials are still unbuilt, so words like `rapid`, `swarm`-as-frequency and `toward X` have no direct target.
 4. Still open from before: mark → motif (T1.e step 3); combat-defense balance.
