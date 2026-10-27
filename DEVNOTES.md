@@ -2424,12 +2424,12 @@ Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open aga
 
 ---
 
-## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale + separation stages 1–6; PR open into `main`.)
+## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Merged to `main` via PR #3, `6abe9ac`: world scale + separation stages 1–6.)
 
 Fresh session: read THIS entry, then the 2026-10-27 word-cloud entry and the 2026-10-23 entry above, `RECONCILIATION.md` (S.b update, CLIENT / UX), and the bible.
 
 ### Git
-PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–6 are committed + pushed, with a PR open into `main`.
+PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). Branch **`session/2026-10-27-world-scale`** (world scaling + 50-colony field `81f2d16`, separation stages 1–6) **MERGED** into `main` via **PR dkentbrown/dots#3** (`6abe9ac`). Next work goes on **`session/2026-10-27-clocks`**, off `main` at `6abe9ac`.
 
 ### Multiplayer decisions (Dustan) — RECONCILIATION S.b
 1. **Server-side authority** (bible §14). The server runs the whole simulation; clients render it and send chants. Bible §15.2's `/sync` (clients upload their own dots) is dropped: it contradicts §14, and offline colonies need a server simulation anyway.
@@ -2543,3 +2543,28 @@ Baseline for before/after telemetry comparison: the 50-colony run on the 447 gri
   - **Pure simulation cost per tick** (no rendering): t10 48 ms (985 dots) · t30 245 ms (4.4k) · t45 800 ms (11.2k) · t60 **1,972 ms (18.1k dots + 4.2k blocks)**; mean 458 ms. **Cost per live dot rises with crowding: ~50 µs at t10–25 → ~109 µs at t60** (neighbour scans, combat and blending grow with local density). That is the once-a-second stall: at full 50-colony load the sim alone needs about 2 s per tick.
   - **For the server, this is fine:** the agreed production clock ticks every 30 s (active colonies), so about 2 s of simulation is around 7% of the budget. Only the 1 s test tick outruns it. If perf is ever wanted, the per-dot cost under crowding is the target.
 - **Separation plan complete (stages 1–6).** Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
+
+### Next
+1. ~~Active/passive clocks in `world_sim.gd`~~ — **done and verified** (next section).
+2. **Order of work step 4, the server:** networking, persistence, presence (drives `set_colony_active`), new-player placement (bible §16 "starting buffer").
+3. **Still open:** world growth with player count (tiered vs frontier, Dustan leans tiered; decide now that state is plain data); public names for the sim members the client reaches (stage 4 follow-up); the test-field autochant lean question (10-23 Open/next #2).
+
+### Active/passive clocks — built and verified (committed + pushed on branch `session/2026-10-27-clocks`)
+Planned by inspection, then built with the recommended defaults (Dustan).
+- **Per-colony countdown clocks** (`world_sim.gd`, "Colony clocks" block): `colony_period` (1 active, `PASSIVE_PERIOD` = 10 passive; absent = active), `_colony_wait`, `colony_ticks` (each colony's own tick count), and `_due` (colonies whose clock fires this world tick), filled by `_advance_colony_clocks()` at the top of `tick()`. **`set_colony_active(colony, active)`** is the presence hook (bible §15.3 `/session`): going active fires on the very next world tick; going passive starts the wait at a random 1–10 so passive colonies don't all fire together. A `{"type": "clock"}` telemetry record marks each switch; snapshots carry `"passive"` (list of passive colony ids).
+- **On the colony clock** (gated on `_due`): dot rolls (`_tick_all_dots`), ageing and block/wall decay (`_age_dots`), rally/build/wall banner TTLs, mark TTLs (marks now store their maker's `colony`), soul decay, autochant (every 5 of the colony's own ticks). **On the world clock, unchanged:** chant input, colony centres, fog, combat resolution, specks, blending, telemetry.
+- **Two traps fixed by moving them to colony ticks:** the speck **collect lock** (`until_tick` now counts colony ticks; in world ticks a passive dot always missed its resolution tick and the F1 late clear voided every payout, so passive colonies would never have gained soul; `f1_fired` gains `colony_tick`), and **banner TTLs** (6 world ticks would expire before a passive colony's dots rolled again: no monuments, walls or rallying).
+- **All colonies active ⇒ identical to before:** every colony is due every tick and `colony_ticks == _tick_num`, so locks, autochant and every TTL behave exactly as they did. RNG is only drawn when a colony goes passive.
+- **Test field:** `TEST_FIELD_PASSIVE = true` — colonies with `i % 20 >= 10` (10–19, 30–39: 20 colonies, 2 of the 5 copies of each archetype) go passive at **`TEST_FIELD_PASSIVE_FROM_TICK` = 40** (warm-up: players who built up and logged off). Generalists' combat pivot stays on the world tick (`AUTOCHANT_COMBAT_TICK`, the scenario's script).
+- **Client (`main.gd`):** window focus drives colony 0 (`NOTIFICATION_APPLICATION_FOCUS_IN/OUT` → `set_colony_active`); the debug HUD tags passive colonies `away`. The headless server needs no change (colony 0 stays active; the field's passive half switches at t40 there too).
+- **Speed:** the sim counts ticks, not seconds. The client's 1 s tick is 30× real time, so a passive colony acts every 10 s in testing; production only changes the server interval to 30 s.
+- `validate_script` clean (`world_sim.gd`, `main.gd`, `server.gd`).
+- **Verified by Dustan's run `1793137685`** (50 colonies, 186 ticks, window focus toggled during the run): **no runtime errors** (only the two known integer-division notices).
+  - **The clock:** after t40, passive dots rolled **0.103** per world tick (target 0.1); active 0.993 (combat locks, perches and collect locks account for the rest). Colony 0 switched clock **11 times** on window focus (so focus events do reach the game; no debug key needed), rolled 0.578 per tick overall, and still reached 500 by t186.
+  - **Before the switch (t1–40, all active):** mix t30–40 within 0.5 points of stages 5–6 (reproduce .220, move .224, observe .121, gather .082, build .069, attack .055, defend .054); specks identical (t40 897 vs 895 / 912). Total live at the low end of the range (t40 7,172 vs 7,406–8,994; colony 0 was passive t9–37, about 100 of the gap); the per-archetype breakdown at t30 sits within the earlier runs' spread, so random-placement variance, not the clocks.
+  - **Passive half, per-colony means:** pop t40 135 → t80 169 → t186 **255** (active 153 → 412 → 398, most at the 500 cap); blocks 31 → 38 → **57** (active 32 → 137 → 448). **All 20 passive colonies alive at t186.** Within each archetype, passive ≤ active except dispersive (both at the cap) and builders (tiny in both, as in every run).
+  - **Combat watch item:** after t40, active → passive **358** fights initiated, passive → active **9**. But per defending colony, passive colonies were attacked *less* (≈18 each vs ≈60 for active ones): smaller and stationary, they rarely make contact. **Passive defenders won 52%** (active defenders 58%). **No passive defence bonus needed for now.**
+  - **Collect-lock fix confirmed:** 1 `f1_fired` in the whole run (an active dot); passive colonies gained soul (mean 5 at t186 vs active 2).
+  - **Blending** kept running for passive colonies on the world clock: 196k contacts vs 1.0M for active (≈3× the dots, and they move).
+  - **Not done:** the all-active regression run (`TEST_FIELD_PASSIVE = false`); t1–40 above covers most of it.
+  - **Pre-existing, not from the clocks:** soul stays in single digits everywhere (decay's `int()` truncation zeroes small pools).

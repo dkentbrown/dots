@@ -101,6 +101,16 @@ func _on_dev_chant(text: String):
 	_process_input(text)
 	dev_bar.clear()
 
+func _notification(what: int) -> void:
+	# Presence: your colony runs on the active clock while the game window has focus and drops
+	# to the passive clock when it loses it (bible §15.3; see world_sim.gd colony clocks).
+	if sim == null:
+		return
+	if what == NOTIFICATION_APPLICATION_FOCUS_IN:
+		sim.set_colony_active(WorldSim.LOCAL_COLONY, true)
+	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		sim.set_colony_active(WorldSim.LOCAL_COLONY, false)
+
 func _process(delta):
 	zoom_distance = lerp(zoom_distance, zoom_target, ZOOM_SMOOTH * delta)
 	zoom_distance = max(zoom_distance, ZOOM_MIN)
@@ -127,6 +137,8 @@ func _update_hud():
 			var role = spec.get("combat_role", "")
 			if role != "":
 				tag = ("[%s]" % role.to_upper()) if sim._tick_num >= WorldSim.AUTOCHANT_COMBAT_TICK else ("[%s@%d]" % [role, WorldSim.AUTOCHANT_COMBAT_TICK])
+			if sim.colony_period.get(i, 1) > 1:
+				tag += " away"  # on the passive clock
 			field_lines.append("c%d %-11s %-7s pop %4d blk %4d soul %4d %s" % [
 				i, spec["name"], color_name,
 				sim.colony_counts.get(i, 0), sim.block_counts.get(i, 0), sim.soul_pool.get(i, 0), tag
