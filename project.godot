@@ -23,15 +23,21 @@ MCPGameInspector="*res://addons/godot_mcp/mcp_game_inspector_service.gd"
 
 [display]
 
-window/size/viewport_width=1920.0
-window/size/viewport_height=1080.0
+window/size/viewport_width=390.0
+window/size/viewport_height=844.0
+window/size/window_width_override=780.0
+window/size/window_height_override=1688.0
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
-window/handheld/orientation="landscape"
+window/handheld/orientation="portrait"
 
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
+
+[gui]
+
+theme/custom="res://ui_theme.tres"
 
 [physics]
 

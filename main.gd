@@ -8,6 +8,17 @@ const PINCH_SPEED = 0.004
 const ZOOM_SMOOTH = 8.0
 const ROTATE_SPEED = 0.005
 
+# Sun: the DirectionalLight3D orbits the globe on WALL-CLOCK time, so the day/night phase carries
+# across sessions (and, later, players) instead of resetting at launch. One revolution per
+# SUN_DAY_SECONDS; SUN_FAST_DAY swaps in a SUN_TEST_DAY_SECONDS day for testing. The sun rides
+# SUN_DECLINATION_DEG above the equator (Earth's tilt — a solstice day). That also puts it just
+# clear of the globe's limb (asin(1/3) ≈ 19.5° at the default zoom of 3.0) when you look at the
+# night side, so it can be seen behind the planet. Purely visual — the simulation ignores it.
+const SUN_DAY_SECONDS = 86400.0
+const SUN_TEST_DAY_SECONDS = 20.0
+const SUN_FAST_DAY = true
+const SUN_DECLINATION_DEG = 23.4
+
 const TICK_SPEED = 1.0
 var tick_timer = 0.0
 
@@ -598,14 +609,27 @@ const COLONY0_CCE = {
 }
 
 @onready var camera = $Camera3D
+@onready var sun = $DirectionalLight3D
 @onready var chant_button = $UI/ChantButton
 @onready var chant_modal = $UI/ChantModal
+@onready var chant_box = $UI/ChantModal/VBox
 @onready var chant_input = $UI/ChantModal/VBox/ChantInput
 @onready var confirm_button = $UI/ChantModal/VBox/ButtonRow/ConfirmButton
 @onready var cancel_button = $UI/ChantModal/VBox/ButtonRow/CancelButton
 @onready var dev_bar = $UI/DevBar
 @onready var hud = $UI/HUD
 @onready var zoom_slider = $UI/ZoomSlider
+
+# Debug overlay: the stats HUD, dev chant bar and zoom slider. Hidden by default so the
+# player-facing UI is just the chant (bible §4); backtick (`) toggles it at runtime.
+const DEBUG_UI_DEFAULT = false
+var _debug_ui = DEBUG_UI_DEFAULT
+# Brief fading echo of the player's chant above the chant button — confirms it was heard
+# without revealing how it was interpreted.
+const CHANT_ECHO_HOLD = 1.2
+const CHANT_ECHO_FADE = 1.2
+var _chant_echo: Label
+var _chant_echo_tween: Tween
 
 var zoom_target = 3.0
 var zoom_distance = 3.0
@@ -653,15 +677,56 @@ func _ready():
 	dev_bar.text_submitted.connect(_on_dev_chant)
 	zoom_slider.value = zoom_target
 	zoom_slider.value_changed.connect(_on_zoom_slider_changed)
+	chant_modal.gui_input.connect(_on_chant_backdrop_input)
+	_build_chant_echo()
+	_set_debug_ui(_debug_ui)
+
+func _set_debug_ui(on: bool) -> void:
+	_debug_ui = on
+	hud.visible = on
+	dev_bar.visible = on
+	zoom_slider.visible = on
+
+func _build_chant_echo() -> void:
+	_chant_echo = Label.new()
+	_chant_echo.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_chant_echo.anchor_left = 0.0
+	_chant_echo.anchor_right = 1.0
+	_chant_echo.anchor_top = 1.0
+	_chant_echo.anchor_bottom = 1.0
+	_chant_echo.offset_top = -120.0
+	_chant_echo.offset_bottom = -90.0
+	_chant_echo.add_theme_font_size_override("font_size", 18)
+	_chant_echo.modulate.a = 0.0
+	$UI.add_child(_chant_echo)
+
+func _echo_chant(text: String) -> void:
+	if _chant_echo_tween:
+		_chant_echo_tween.kill()
+	_chant_echo.text = text
+	_chant_echo.modulate.a = 0.0
+	_chant_echo_tween = create_tween()
+	_chant_echo_tween.tween_property(_chant_echo, "modulate:a", 1.0, 0.25)
+	_chant_echo_tween.tween_interval(CHANT_ECHO_HOLD)
+	_chant_echo_tween.tween_property(_chant_echo, "modulate:a", 0.0, CHANT_ECHO_FADE)
 
 func _open_chant():
 	chant_modal.visible = true
+	chant_button.visible = false
 	chant_input.clear()
 	chant_input.grab_focus()
 
 func _close_chant():
 	chant_modal.visible = false
+	chant_button.visible = true
 	chant_input.clear()
+
+func _on_chant_backdrop_input(event: InputEvent) -> void:
+	# A tap or click on the dimmed backdrop, outside the chant box, dismisses it. The modal is
+	# full-screen at the canvas origin, so the event's local position is also its global one.
+	var pressed = (event is InputEventMouseButton or event is InputEventScreenTouch) and event.pressed
+	if pressed and not chant_box.get_global_rect().has_point(event.position):
+		_close_chant()
 
 func _confirm_chant():
 	_process_input(chant_input.text)
@@ -679,6 +744,7 @@ func _process(delta):
 	zoom_distance = lerp(zoom_distance, zoom_target, ZOOM_SMOOTH * delta)
 	zoom_distance = max(zoom_distance, ZOOM_MIN)
 	_update_camera()
+	_update_sun()
 	tick_timer += delta
 	if tick_timer >= TICK_SPEED:
 		tick_timer = 0.0
@@ -1010,6 +1076,8 @@ func _update_hud():
 # --- Chant input ---
 
 func _process_input(text: String):
+	if text.strip_edges() != "":
+		_echo_chant(text.strip_edges())
 	if USE_SERVER:
 		push_warning("USE_SERVER enabled but server is not implemented")
 		_send_chant_to_server(text)
@@ -2791,9 +2859,37 @@ func _update_camera():
 	camera.transform.basis = orbit_basis
 	camera.position = orbit_basis.z * zoom_distance
 
+func _update_sun() -> void:
+	var day = SUN_TEST_DAY_SECONDS if SUN_FAST_DAY else SUN_DAY_SECONDS
+	var phase = fmod(Time.get_unix_time_from_system(), day) / day * TAU
+	var decl = deg_to_rad(SUN_DECLINATION_DEG)
+	var to_sun = Vector3(cos(decl) * sin(phase), sin(decl), cos(decl) * cos(phase))
+	# A DirectionalLight3D shines along its -Z, so aim -Z from the sun toward the globe.
+	sun.transform.basis = Basis.looking_at(-to_sun, Vector3.UP)
+
 # --- Input ---
 
 func _input(event):
+	if event is InputEventKey and event.pressed and not event.echo:
+		var typing = get_viewport().gui_get_focus_owner() is LineEdit
+		if event.keycode == KEY_QUOTELEFT and not typing:
+			_set_debug_ui(not _debug_ui)
+			get_viewport().set_input_as_handled()
+			return
+		if event.keycode == KEY_ESCAPE and chant_modal.visible:
+			_close_chant()
+			get_viewport().set_input_as_handled()
+			return
+		# Enter opens the chant on desktop. Marked handled so the same keypress doesn't reach
+		# the freshly focused input and submit it empty.
+		if (event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER) and not chant_modal.visible and not typing:
+			_open_chant()
+			get_viewport().set_input_as_handled()
+			return
+	# While the chant is open, the world behind it doesn't orbit or zoom. Releases still pass
+	# through so a drag or touch that began before it opened can't get stuck.
+	if chant_modal.visible and (event is InputEventMouseMotion or event is InputEventScreenDrag or (event is InputEventMouseButton and event.pressed)):
+		return
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_RIGHT:
 			is_orbiting = event.pressed
