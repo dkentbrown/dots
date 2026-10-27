@@ -180,6 +180,13 @@ Audited against the intent above:
 **⮑ Chant engine call (Dustan, 2026-10-23): baked lexicon now, no runtime LLM.** A runtime LLM is a cost problem — server GPU time, or shipping a 400MB–1GB on-device model (which would also make the server trust client-made recipes, against §14's server authority). Instead `CHANT_LEXICON` bakes an LLM's interpretation into a table at authoring time: 401 words in 30 synonym groups targeting the fixed schema, composed per chant by `_interpret_chant` (inflection stripping, negation, intensifiers, per-chant caps). This keeps §7's boundary — recipes, never new primitives — but loses whole-sentence nuance (metaphor, irony) the bible's LLM would catch. Upgrade path, unchanged contract: unknown words (logged as `unmatched` in `chant_parsed` telemetry) go to a server LLM, results cached and shared across all players, so each word is interpreted once for everyone.
 `DECISION: BIBLE (canon, server LLM eventually) + CODE (baked lexicon as the shipping interpreter until then). Contract alignment done (T1.c); spine itself still DEFER.`
 
+**⮑ Multiplayer decisions (Dustan, 2026-10-27) — the spine is now being planned:**
+- **Server-side authority (BIBLE §14).** The server runs the whole simulation; clients render and send chants. **§15.2's `/sync` contract is dropped** (clients uploading their own dots contradicts §14, and offline colonies need a server simulation regardless). `/chant` and `/session` survive in spirit.
+- **Active 30 s / passive 5 min** colony ticks (§11 said 10–15 s / 5–10 min). **Clock rule:** a colony's own things run on its clock (its dots acting, ageing, breeding, soul decay, its structures and marks decaying); things between colonies run on the world clock (combat resolution, blending, specks). Keeps §11.3's temperament split without making sleeping colonies defenceless. Watch item: active attackers initiate 10× more fights.
+- **Scale: one sphere for 50 players** to start (§3's 10,000 is the long-run target; §15.4's region partitioning is how it grows). The world was rescaled on 2026-10-27 via `WORLD_SCALE` — same globe, finer grid (447²).
+- **Order:** scale (done) → active/passive clocks → separate the simulation from the visuals → headless Godot server, networking, persistence, presence, placement.
+`DECISION (2026-10-27): BIBLE §14 (server authority) + CODE (clock rule, 30 s / 5 min, 50-player sphere; drop §15.2 /sync). Build started.`
+
 ### S.c — soul: the resource economy and chant potency ⚠️ FIRST CANON CALL MADE
 
 **The bible does not have a resource system.** §16 asks it as an open question — *"Resource system — does `gather` have a target? What do resources enable?"* — but the code answered it long ago and half-built it. That answer was never written back into the doc, so the bible understates what exists.
@@ -275,7 +282,7 @@ Carry these into the roadmap: CCE-blending proximity radius & rate · ~~resource
 | T2.c | selection model (NS softmax vs bible linear) | **BIBLE (linear now)** | RESOLVED 2026-07-25; `SELECTION_SOFTMAX` flag, softmax deferred to Tier 2/3 capstone; three-tier roadmap added |
 | T3.a | monuments & wall lines | | follows T2.a |
 | S.a | dilution + blending | **dilution re-enabled; blending built** | 2026-07-28: dilution ON, soul-modulated (via S.c). 2026-10-23: blending = contact + border births, untuned |
-| S.b | server / LLM / MP spine | **chant engine: baked lexicon** | 2026-10-23: no runtime LLM for now; server LLM + shared cache later for unmatched words; spine still deferred |
+| S.b | server / LLM / MP spine | **baked lexicon; server authority; 30 s / 5 min clocks** | 2026-10-23: no runtime LLM. 2026-10-27: server-side authority, clock rule, 50-player sphere, §15.2 /sync dropped; world rescaled; build started |
 | S.c | soul economy + chant potency | **CODE (revised 07-28)** | 07-24 first call; 07-28 revised — standing soul drives dilution, draw removed, decay added; branch unmerged, needs tuning |
 | U.a | orientation | **CODE — portrait** | 2026-10-23; supersedes §14 landscape |
 | U.b | chant input | **CODE — word cloud** | 2026-10-27; supersedes §4 text box, narrows §7 free language; vocabulary 712 words / 63 meanings |
