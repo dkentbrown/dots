@@ -2424,12 +2424,12 @@ Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open aga
 
 ---
 
-## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale, separation stages 1–3; stage 4 uncommitted on top.)
+## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale, separation stages 1–4; stage 5 uncommitted on top.)
 
 Fresh session: read THIS entry, then the 2026-10-27 word-cloud entry and the 2026-10-23 entry above, `RECONCILIATION.md` (S.b update, CLIENT / UX), and the bible.
 
 ### Git
-PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–3 are committed + pushed; stage 4 is uncommitted on top.
+PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–4 are committed + pushed; stage 5 is uncommitted on top.
 
 ### Multiplayer decisions (Dustan) — RECONCILIATION S.b
 1. **Server-side authority** (bible §14). The server runs the whole simulation; clients render it and send chants. Bible §15.2's `/sync` (clients upload their own dots) is dropped: it contradicts §14, and offline colonies need a server simulation anyway.
@@ -2459,7 +2459,7 @@ PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2
 ### Verify
 `validate_script` clean; scaled constants confirmed in the editor (GRID_RES 447, CELL_STEP 0.01406 vs block width 0.01386, so blocks still tile; specks 25/tick, cap 7500). **Not run in Godot by Claude.** Check: the colonies' size on the globe and the spacing between them; zooming in close; monuments still tiling; specks and gathering still working (soul still flows); and whether tick time got better or worse.
 
-### Agreed next: separate the simulation from the visuals (before clocks and growth)
+### Agreed next: separate the simulation from the visuals (before clocks and growth) — stages 1–4 done
 Dustan liked the 50-colony look. On how the world should grow with player count, the options were tiered resizing, one big sphere filled outward from placement, or a new world when one fills. Dustan leans toward tiered growth as most future-proof, but the decision is deferred until after the separation, because moving whole colonies (resizing without tearing monuments and walls apart) is far simpler once state is plain data. Placement and a per-world size are needed under any option.
 
 **Separation plan (each stage behaviour-preserving, validated, run by Dustan, own commit):**
@@ -2505,4 +2505,20 @@ Baseline for before/after telemetry comparison: the 50-colony run on the 447 gri
 - `validate_script` clean. **Verified by Dustan's run `1793122471`** (50 colonies, 61 ticks, "pretty decent run"): **no runtime errors**; all 50 alive at t61.
   - Live / specks / marks track the earlier runs (t45 live 11,449 / 9,573 / **11,275**; specks 989 / 1,003 / **975**). Blending active (56,906 contacts, 413 border births by t61).
   - Behaviour mix t30–45 within about 1.5 points of both earlier runs.
-  - **Blocks were about 25% lower (t45: 2,084 against 2,689 / 2,939). That's run variance, not stage 3:** this run's five builder colonies were half the usual size at t45 (239 dots against 459–521; build rolls 2,589 against about 5,000), while blocks per build roll (0.174) sits inside the earlier range (0.189–0.225). Combat and walls by t61 match the stages 1–2 run (70 / 62 resolutions; 6 / 9 wall banners). Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
+  - **Blocks were about 25% lower (t45: 2,084 against 2,689 / 2,939). That's run variance, not stage 3:** this run's five builder colonies were half the usual size at t45 (239 dots against 459–521; build rolls 2,589 against about 5,000), while blocks per build roll (0.174) sits inside the earlier range (0.189–0.225). Combat and walls by t61 match the stages 1–2 run (70 / 62 resolutions; 6 / 9 wall banners).
+
+### Separation stage 4 — `world_sim.gd` extracted; `main.gd` is the client
+- **`world_sim.gd`** (`extends RefCounted`, no scene, nodes or meshes; 2,887 lines) holds **all world state and rules**: dots, blocks, specks, marks, colonies, soul, chants (lexicon, meanings, word-cloud supply), combat, blending, banners, telemetry, colours (`_dot_colors`, the palette is colony identity) and the view flags. Its entry points:
+  - **`setup()`** — the old `_ready` world half: log wipe, `run_start`, chant tables, test field, spawns.
+  - **`tick()`** — the old tick body, same order.
+  - **`take_view_changes()`** → `[dirty, gone]`, which resets the batch.
+  - the existing `_process_chant_locally`, `_pick_cloud_word`, `_compute_colony_center`, `_dot_colors`.
+- **`main.gd`** (415 lines) is the **client**: camera / orbit / zoom / input, sun, HUD, debug toggle, word cloud, and the mesh view (`_sync_views` now drains `sim.take_view_changes()`; `_view_build/_place/_color` and the basis helpers read `sim.dot_data` / `speck_data` / `mark_data` / `wall_perch`). `_ready` creates the sim (`sim = WorldSim.new(); sim.setup()`) and then frames the camera; `_process` calls `sim.tick()` every `TICK_SPEED`, refreshes the HUD and syncs views every frame.
+- **Three simulation → client calls removed:** `_apply_recipe` no longer refreshes the HUD (the client does it after chants and ticks), and the spawns no longer frame the camera (the client calls `_focus_on_colony()` after `setup()`; with `TEST_FIELD` off it now frames after the enemy spawn, a negligible framing difference).
+- **Done by script** (`stage4.py` in Claude's scratchpad): split into top-level declarations, client set listed explicitly, everything else to the sim, client references prefixed `sim.` / `WorldSim.` (strings and comments skipped), aborting on any local-name collision. **Line-conservation check:** every original line is present in one of the two files except the 7 deliberately rewritten (`_sync_views`'s flag handling, one `_focus_on_colony()`).
+- Both scripts `validate_script` clean; `world_sim.gd` compiling as a bare `RefCounted` proves it reaches nothing in the scene.
+- **Verified by Dustan's run `1793123528`** (50 colonies, 55 ticks): **no runtime errors**. The old `scale`-shadowing warning is gone, since `world_sim.gd` extends RefCounted (no `scale` property); only the two integer-division notices remain. All 50 alive at t55.
+  - Counts track all three earlier runs (t45 live / blocks / specks: 10,289 / 2,114 / 991). Combat 54 resolutions by t55; blending 38,666 contacts, 324 border births.
+  - Behaviour mix t30–45 within about 3 points; move is a little higher (0.237), from movers colonies plus Dustan's move-leaning chants.
+  - **Chant path through the sim works end to end:** three 5-word word-cloud casts (e.g. "procession hurricane verdant ancestor love") parsed fully and applied composed recipes to colony 0, and the HUD and cast flight read sim state without error.
+- **Follow-up (cosmetic, not done):** the client reaches some underscore members (`sim._tick_num`, `_field_specs`, `_cached_colony_centers`, `_pick_cloud_word`, `_process_chant_locally`, `_compute_colony_center`, `_dot_colors`). Give them public names when the server interface is designed (stage 6+). Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
