@@ -186,7 +186,13 @@ const TEST_FIELD_COLONY_COUNT = WORLD_PLAYERS
 # within TEST_FIELD_MIN_FOUNDER_CELLS of another, so seed clusters can't overlap.
 const TEST_FIELD_RANDOM_SPREAD = true
 const TEST_FIELD_MIN_FOUNDER_CELLS = 6
-const AUTOCHANT_INTERVAL = 5          # ticks between lean applications
+# Passive half (colony clocks): colonies 10-19 and 30-39 (i % 20 >= 10) go passive at
+# TEST_FIELD_PASSIVE_FROM_TICK — 2 of the 5 copies of each archetype, so active and passive
+# compare within an archetype. The warm-up stands in for players who built a colony and then
+# logged off; from tick 0 they'd stay 8-dot seeds. Colony 0 is yours: window focus drives it.
+const TEST_FIELD_PASSIVE = true
+const TEST_FIELD_PASSIVE_FROM_TICK = 40
+const AUTOCHANT_INTERVAL = 5          # colony ticks between lean applications
 const AUTOCHANT_COMBAT_TICK = 50      # generalists switch to their combat lean at/after this tick
 const LEAN = 0.02                     # per-application CCE delta, BEFORE the soul multiplier
 const FIELD_BASE_BIT = 0.06           # "a bit of everything" floor in every primitive
@@ -267,6 +273,21 @@ const TELEMETRY_FILE = "res://telemetry.jsonl"
 const TELEMETRY_SNAPSHOT_INTERVAL = 1   # snapshot every N ticks; 1 = every tick
 var _next_dot_id = 1
 var _tick_num = 0
+
+# --- Colony clocks (active / passive) ---------------------------------------------------
+# A world tick is the shared clock (30 s in production; the client runs one per second, so
+# testing is 30x real time). CLOCK RULE: anything a colony owns runs on its OWN clock — its dots
+# rolling, ageing and breeding, its blocks / banners / marks decaying, its soul decay, its
+# autochant. Anything between colonies runs on the world clock — combat resolution, blending,
+# speck spawning. An active colony's clock fires every world tick; a passive one (owner offline,
+# bible §11.2) every PASSIVE_PERIOD world ticks: 5 min against the 30 s world tick. All colonies
+# start active, and with every colony active each colony tick IS a world tick, so the
+# simulation is exactly what it was before clocks.
+const PASSIVE_PERIOD = 10
+var colony_period = {}   # colony -> world ticks per colony tick (1 active, PASSIVE_PERIOD passive); absent = active
+var _colony_wait = {}    # colony -> world ticks until its clock next fires
+var colony_ticks = {}    # colony -> colony ticks elapsed: the colony's own clock
+var _due = {}            # colony -> true when its clock fires on the current world tick
 
 # Tuning constants (formerly magic numbers)
 const SPAWN_NUDGE = 0.018 / WORLD_SCALE
@@ -627,7 +648,7 @@ var speck_cells = {}
 # speck -> { "dir": unit direction, "cell": Vector2i } — a speck's place is data, not its mesh.
 var speck_data = {}
 var surface_marks = []  # mark ids — mark_surface output, decays by TTL
-# mark id -> { "dir", "color", "size", "ticks_remaining" } — a mark is data; the view draws it.
+# mark id -> { "colony", "dir", "color", "size", "ticks_remaining" } — a mark is data; the view draws it.
 var mark_data = {}
 # Per-tick tally of primitives selected by LOCAL_COLONY dots. Reset at the top of each
 # tick's dot pass, read into the telemetry snapshot at the end of the same tick.
@@ -759,7 +780,10 @@ func tick() -> void:
 	#    combat_locked before dots roll, so locked dots skip their primitive this tick.
 	#  - _tick_specks before _tick_all_dots: specks spawned this tick are collidable
 	#    in the same tick (same-tick collectability).
+	#  - _advance_colony_clocks before everything on a colony clock (they read _due).
 	_check_chant_file()
+	_tick_field_presence()
+	_advance_colony_clocks()
 	_age_dots()
 	# Spatial grid is now incrementally maintained \u2014 no rebuild needed
 	_compute_all_colony_centers()
@@ -795,9 +819,42 @@ func tick() -> void:
 			"primitives": _primitive_counts.duplicate(true),
 			"move_modes": _move_mode_counts.duplicate(true),
 			"blend": _blend_counts.duplicate(true),
-			"marks": surface_marks.size()
+			"marks": surface_marks.size(),
+			"passive": colony_period.keys().filter(func(c): return colony_period[c] > 1)
 		})
 		_blend_counts.clear()
+
+func set_colony_active(colony: int, active: bool) -> void:
+	# Presence (bible §15.3 /session): the owner has the game open (active) or not (passive).
+	# Going active fires the colony's clock on the very next world tick, so it answers at once;
+	# going passive starts the wait at a random point in the period, so passive colonies don't
+	# all fire on the same world tick.
+	var period = 1 if active else PASSIVE_PERIOD
+	if colony_period.get(colony, 1) == period:
+		return
+	colony_period[colony] = period
+	_colony_wait[colony] = 0 if active else randi_range(1, PASSIVE_PERIOD)
+	_telemetry({ "type": "clock", "tick": _tick_num, "colony": colony, "active": active })
+
+func _advance_colony_clocks() -> void:
+	# Count every colony's wait down one world tick; the colonies that reach zero are due this
+	# tick, advance their own clock, and wait a full period again.
+	_due.clear()
+	for c in known_colonies:
+		var wait = _colony_wait.get(c, 0) - 1
+		if wait <= 0:
+			_due[c] = true
+			colony_ticks[c] = colony_ticks.get(c, 0) + 1
+			wait = colony_period.get(c, 1)
+		_colony_wait[c] = wait
+
+func _tick_field_presence() -> void:
+	# Playtest field: the passive half logs off at TEST_FIELD_PASSIVE_FROM_TICK (see the const).
+	if not TEST_FIELD or not TEST_FIELD_PASSIVE or _tick_num != TEST_FIELD_PASSIVE_FROM_TICK:
+		return
+	for i in range(_field_specs.size()):
+		if i % 20 >= 10:
+			set_colony_active(i, false)
 
 func take_view_changes() -> Array:
 	# Hand the client everything flagged since the last call — [dirty (id -> VIEW_* bits),
@@ -903,6 +960,8 @@ func _tick_soul_decay() -> void:
 	if SOUL_DECAY_RATE <= 0.0:
 		return
 	for c in soul_pool.keys():
+		if not _due.has(c):
+			continue  # colony clock: soul decays per colony tick
 		soul_pool[c] = int(soul_pool[c] * (1.0 - SOUL_DECAY_RATE))
 
 func _tick_blending() -> void:
@@ -1021,11 +1080,13 @@ func _tick_autochant() -> void:
 	# Playtest-field CCE driver: every AUTOCHANT_INTERVAL ticks each surviving colony
 	# re-chants its lean, so cultures deepen as the run progresses instead of sitting at
 	# their seeded values. Wiped-out colonies stop chanting (no dots left to chant to).
+	# Colony clock: every AUTOCHANT_INTERVAL of the colony's OWN ticks, so a passive colony chants
+	# 10x less often in real time but the same amount per generation.
 	if not TEST_FIELD:
 		return
-	if _tick_num % AUTOCHANT_INTERVAL != 0:
-		return
 	for i in range(_field_specs.size()):
+		if not _due.has(i) or colony_ticks[i] % AUTOCHANT_INTERVAL != 0:
+			continue
 		if colony_counts.get(i, 0) <= 0:
 			continue
 		var spec = _field_specs[i]
@@ -1241,10 +1302,18 @@ func _tick_all_dots():
 			continue
 		if dot_data[dot].get("is_block", false):
 			continue
+		# Colony clock: a dot acts only on its colony's ticks (a passive colony's dots roll once
+		# per PASSIVE_PERIOD world ticks). Newborns join their parent's colony, so they're due too.
+		var my_colony = dot_data[dot]["colony"]
+		if not _due.has(my_colony):
+			continue
+		# The collect lock counts the colony's OWN ticks: in world ticks a passive dot would
+		# always miss its resolution tick and the F1 late clear would void every payout.
+		var now = colony_ticks[my_colony]
 		var lock = dot_data[dot].get("collect_lock", null)
 		if lock != null:
-			if lock["until_tick"] <= _tick_num:
-				if lock["until_tick"] == _tick_num:
+			if lock["until_tick"] <= now:
+				if lock["until_tick"] == now:
 					# On-time resolution: pay out.
 					if lock["speck"] in specks:
 						_remove_speck(lock["speck"])
@@ -1254,10 +1323,11 @@ func _tick_all_dots():
 					var collector_colony = dot_data[dot]["colony"]
 					soul_pool[collector_colony] = soul_pool.get(collector_colony, 0) + 1
 				# F1 late clear: the resolution tick was missed (combat preempted it), so
-				# until_tick < _tick_num now. Clear the lock without payout — no speck freed,
+				# until_tick < now. Clear the lock without payout — no speck freed,
 				# no soul credited — so the dot resumes normal ticking instead of stalling.
-				if lock["until_tick"] < _tick_num:
-					_telemetry({ "type": "f1_fired", "tick": _tick_num, "colony": dot_data[dot]["colony"], "until_tick": lock["until_tick"], "dot_id": dot_data[dot].get("dot_id", -1) })
+				# until_tick and colony_tick are colony ticks; tick is the world tick.
+				if lock["until_tick"] < now:
+					_telemetry({ "type": "f1_fired", "tick": _tick_num, "colony": dot_data[dot]["colony"], "until_tick": lock["until_tick"], "colony_tick": now, "dot_id": dot_data[dot].get("dot_id", -1) })
 				dot_data[dot]["collect_lock"] = null
 			continue
 		_tick_dot(dot)
@@ -1318,7 +1388,8 @@ func _tick_dot(dot: int):
 	var my_cell = _cell_key(_dir_of(dot))
 	var specks_here = speck_cells.get(my_cell, [])
 	if not specks_here.is_empty():
-		dot_data[dot]["collect_lock"] = { "until_tick": _tick_num + 1, "speck": specks_here[0] }
+		# until_tick is in colony ticks (see _tick_all_dots): resolves on the colony's next tick.
+		dot_data[dot]["collect_lock"] = { "until_tick": colony_ticks[dot_data[dot]["colony"]] + 1, "speck": specks_here[0] }
 
 func _execute_primitive(dot: int, primitive: String, dials: Dictionary):
 	var range_val = dials.get("range", 0.5)
@@ -1462,7 +1533,7 @@ func _execute_primitive(dot: int, primitive: String, dials: Dictionary):
 			# Leave a persistent mark at the dot's position, coloured by the dot's own CCE
 			# tint (so a red-tinted culture paints red). Permanence/size scale with intensity.
 			var mark_color = _dot_colors(dot)[0]
-			_create_surface_mark(_dir_of(dot), mark_color, intensity)
+			_create_surface_mark(_dir_of(dot), mark_color, intensity, dot_data[dot]["colony"])
 		"gather":
 			# Directed soul-seeking. March toward the nearest speck this dot has observed;
 			# the ambient collect check at the end of _tick_dot picks it up on arrival, so
@@ -1933,11 +2004,14 @@ func _refresh_build_banner(id: int):
 			return
 
 func _tick_build_banners():
+	# Colony clock: a banner's TTL counts its colony's ticks (in world ticks a passive colony's
+	# banners would expire before any of its dots rolled again).
 	var i = build_banners.size() - 1
 	while i >= 0:
-		build_banners[i]["ticks_remaining"] -= 1
-		if build_banners[i]["ticks_remaining"] <= 0:
-			build_banners.remove_at(i)
+		if _due.has(build_banners[i]["colony"]):
+			build_banners[i]["ticks_remaining"] -= 1
+			if build_banners[i]["ticks_remaining"] <= 0:
+				build_banners.remove_at(i)
 		i -= 1
 
 # --- Rally banners ---
@@ -1951,11 +2025,13 @@ func _drop_rally_banner(cell: Vector2i, colony: int):
 	rally_banners.append({"cell": cell, "colony": colony, "ticks_remaining": BANNER_TTL})
 
 func _tick_rally_banners():
+	# Colony clock, as _tick_build_banners.
 	var i = rally_banners.size() - 1
 	while i >= 0:
-		rally_banners[i]["ticks_remaining"] -= 1
-		if rally_banners[i]["ticks_remaining"] <= 0:
-			rally_banners.remove_at(i)
+		if _due.has(rally_banners[i]["colony"]):
+			rally_banners[i]["ticks_remaining"] -= 1
+			if rally_banners[i]["ticks_remaining"] <= 0:
+				rally_banners.remove_at(i)
 		i -= 1
 
 # --- Wall banners (stage (b) drop; stages (d)/(e) consumption below) ---
@@ -1973,11 +2049,13 @@ func _drop_wall_banner(cell: Vector2i, colony: int, threat_dir: Vector3):
 	_telemetry({ "type": "wall_banner_dropped", "tick": _tick_num, "colony": colony, "cell": [cell.x, cell.y] })
 
 func _tick_wall_banners():
+	# Colony clock, as _tick_build_banners.
 	var i = wall_banners.size() - 1
 	while i >= 0:
-		wall_banners[i]["ticks_remaining"] -= 1
-		if wall_banners[i]["ticks_remaining"] <= 0:
-			wall_banners.remove_at(i)
+		if _due.has(wall_banners[i]["colony"]):
+			wall_banners[i]["ticks_remaining"] -= 1
+			if wall_banners[i]["ticks_remaining"] <= 0:
+				wall_banners.remove_at(i)
 		i -= 1
 
 func _find_nearest_wall_banner(my_cell: Vector2i, my_colony: int):
@@ -2568,8 +2646,12 @@ func _face_dir(dot: int, target_dir: Vector3) -> void:
 	_view_touch(dot, VIEW_PLACE)
 
 func _age_dots():
+	# Colony clock: dots age and blocks decay on their colony's ticks, so a passive colony's
+	# generations and monuments last PASSIVE_PERIOD times longer in real time (bible §11.3).
 	var to_remove = []
 	for dot in dots:
+		if not _due.has(dot_data[dot]["colony"]):
+			continue
 		if dot_data[dot].get("is_block", false):
 			dot_data[dot]["decay_ticks_remaining"] -= 1
 			if dot_data[dot]["decay_ticks_remaining"] <= 0:
@@ -2845,12 +2927,13 @@ func _tick_specks() -> void:
 
 # mark_surface output: a flat coloured quad flush on the surface, just under the dots. Size
 # and lifespan scale with the intensity dial. Marks decay by TTL (see _tick_surface_marks).
-func _create_surface_mark(dir: Vector3, color: Color, intensity: float) -> void:
+func _create_surface_mark(dir: Vector3, color: Color, intensity: float, colony: int) -> void:
 	# Perf cap: skip when the field is saturated; TTL expiry (_tick_surface_marks) frees slots.
 	if surface_marks.size() >= MARK_MAX:
 		return
 	var mark = _new_entity_id()
 	mark_data[mark] = {
+		"colony": colony,  # the maker's colony: its TTL runs on that colony's clock
 		"dir": dir.normalized(),
 		"color": color,
 		"size": lerp(MARK_SIZE_MIN, MARK_SIZE_MAX, intensity),
@@ -2864,6 +2947,9 @@ func _tick_surface_marks() -> void:
 	var i = surface_marks.size() - 1
 	while i >= 0:
 		var mark = surface_marks[i]
+		if not _due.has(mark_data[mark]["colony"]):
+			i -= 1
+			continue  # colony clock: a mark fades on its maker colony's ticks
 		mark_data[mark]["ticks_remaining"] -= 1
 		if mark_data[mark]["ticks_remaining"] <= 0:
 			mark_data.erase(mark)
