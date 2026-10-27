@@ -2424,12 +2424,12 @@ Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open aga
 
 ---
 
-## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale + separation stages 1–6; PR open into `main`.)
+## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Merged to `main` via PR #3, `6abe9ac`: world scale + separation stages 1–6.)
 
 Fresh session: read THIS entry, then the 2026-10-27 word-cloud entry and the 2026-10-23 entry above, `RECONCILIATION.md` (S.b update, CLIENT / UX), and the bible.
 
 ### Git
-PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–6 are committed + pushed, with a PR open into `main`.
+PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). Branch **`session/2026-10-27-world-scale`** (world scaling + 50-colony field `81f2d16`, separation stages 1–6) **MERGED** into `main` via **PR dkentbrown/dots#3** (`6abe9ac`). Next work goes on **`session/2026-10-27-clocks`**, off `main` at `6abe9ac`.
 
 ### Multiplayer decisions (Dustan) — RECONCILIATION S.b
 1. **Server-side authority** (bible §14). The server runs the whole simulation; clients render it and send chants. Bible §15.2's `/sync` (clients upload their own dots) is dropped: it contradicts §14, and offline colonies need a server simulation anyway.
@@ -2543,3 +2543,7 @@ Baseline for before/after telemetry comparison: the 50-colony run on the 447 gri
   - **Pure simulation cost per tick** (no rendering): t10 48 ms (985 dots) · t30 245 ms (4.4k) · t45 800 ms (11.2k) · t60 **1,972 ms (18.1k dots + 4.2k blocks)**; mean 458 ms. **Cost per live dot rises with crowding: ~50 µs at t10–25 → ~109 µs at t60** (neighbour scans, combat and blending grow with local density). That is the once-a-second stall: at full 50-colony load the sim alone needs about 2 s per tick.
   - **For the server, this is fine:** the agreed production clock ticks every 30 s (active colonies), so about 2 s of simulation is around 7% of the budget. Only the 1 s test tick outruns it. If perf is ever wanted, the per-dot cost under crowding is the target.
 - **Separation plan complete (stages 1–6).** Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
+
+### Next
+1. **Active/passive clocks in `world_sim.gd`** (order of work step 2; clock rule in Multiplayer decisions above). Testable single-player: your colony active while the window has focus, half the test colonies passive; needs a time speed-up for testing, like `SUN_FAST_DAY`.
+2. **Still open:** world growth with player count (tiered vs frontier, Dustan leans tiered; decide now that state is plain data); public names for the sim members the client reaches (stage 4 follow-up); the test-field autochant lean question (10-23 Open/next #2).
