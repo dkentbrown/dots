@@ -622,8 +622,11 @@ const CLOUD_MIX_CONTACT = 0.2
 const CLOUD_CONTACT_MEMORY_TICKS = 30
 const WordCloud = preload("res://word_cloud.gd")
 
-var dots = []
-var dot_data = {}
+var dots = []        # entity ids (dots AND blocks) — separation stage 2: ids, not nodes, are the keys
+var dot_data = {}    # entity id -> record
+# entity id -> its MeshInstance3D (dots, blocks, specks). Only drawing code touches meshes;
+# the simulation addresses everything by id.
+var views = {}
 var specks = []
 # Test field, built in _ready by _build_test_field: per-colony archetype spec and { name, color }.
 var _field_specs = []
@@ -632,6 +635,8 @@ var _field_colors = []
 # changes in _create_speck and _remove_speck; it replaces full scans of `specks`, which grew 5x
 # with WORLD_SCALE.
 var speck_cells = {}
+# speck -> { "dir": unit direction, "cell": Vector2i } — a speck's place is data, not its mesh.
+var speck_data = {}
 var surface_marks = []  # [{node: MeshInstance3D, ticks_remaining: int}] — mark_surface output, decays by TTL
 # Per-tick tally of primitives selected by LOCAL_COLONY dots. Reset at the top of each
 # tick's dot pass, read into the telemetry snapshot at the end of the same tick.
@@ -655,17 +660,18 @@ var _local_contacts = {}
 var _profile_cache = {}
 var _profile_cache_tick = -1
 var word_cloud = null
-# Live-dot record (see _create_dot):
-# dot_data[dot] = {
+# Live-dot record (see _create_dot), keyed by entity id (its mesh is views[id]):
+# dot_data[id] = {
 #   "age": int,                 # ticks lived, dies at DOT_LIFETIME
 #   "cce": { "motion": {...}, "action": {...}, "dials": {...} },
 #   "colony": int,              # colony ID
+#   "dir": Vector3,             # unit direction of its place on the globe — the truth; the mesh follows (_dir_of)
 #   "build_banners_used": {},   # {banner_id: true} of banners this dot has built on (won't re-feed)
-#   "dot_id": int,              # stable id for logging
+#   "dot_id": int,              # == its key (entity id); kept for logging / telemetry
 #   "pending_observe": null,    # set by _execute_observe; consumed by move via OBSERVE_MOVE_MAP
 #   "collect_lock": null,       # set on speck-cell collision; resolved in _tick_all_dots
 # }
-# Block-record variant (see _create_block): "age", "cce", "colony", plus
+# Block-record variant (see _create_block): "age", "cce", "colony", "dir", plus
 #   "is_block": true, "decay_ticks_remaining": int, "stack_index": int. Its cce is a
 #   NEUTRAL copy with action.defend = BLOCK_DEFEND_VALUE. Blocks carry none of
 #   dot_id / pending_observe / collect_lock / build_banners_used.
@@ -959,7 +965,7 @@ func _tick_blending() -> void:
 	for dot in dots:
 		if dot_data[dot].get("is_block", false):
 			continue
-		var cell = dot_cell.get(dot, _cell_key(dot.position.normalized()))
+		var cell = dot_cell.get(dot, _cell_key(_dir_of(dot)))
 		if not living.has(cell):
 			living[cell] = []
 		living[cell].append(dot)
@@ -1022,9 +1028,9 @@ func _blend_toward(target: Dictionary, toward: Dictionary, rate: float) -> void:
 			if toward[layer].has(key):
 				target[layer][key] += (toward[layer][key] - target[layer][key]) * rate
 
-func _foreign_cce_mean_near(dot: Node3D, my_colony: int) -> Dictionary:
+func _foreign_cce_mean_near(dot: int, my_colony: int) -> Dictionary:
 	# Mean CCE of the living foreign dots within BLEND_RADIUS cells of `dot`, or {} if none.
-	var key = dot_cell.get(dot, _cell_key(dot.position.normalized()))
+	var key = dot_cell.get(dot, _cell_key(_dir_of(dot)))
 	var sum = {}
 	var count = 0
 	for du in range(-BLEND_RADIUS, BLEND_RADIUS + 1):
@@ -1381,7 +1387,7 @@ func _tick_all_dots():
 			continue
 		_tick_dot(dot)
 
-func _tick_dot(dot: Node3D):
+func _tick_dot(dot: int):
 	var cce = dot_data[dot]["cce"]
 	var pool = {}
 	for key in cce["motion"]:
@@ -1431,15 +1437,15 @@ func _tick_dot(dot: Node3D):
 		_primitive_counts[tally_colony] = {}
 	_primitive_counts[tally_colony][chosen] = _primitive_counts[tally_colony].get(chosen, 0) + 1
 	if LOG_ENABLED and dot_data[dot]["colony"] == LOCAL_COLONY:
-		var cell = _cell_key(dot.position.normalized())
+		var cell = _cell_key(_dir_of(dot))
 		_log("[t%d] dot %d at (%d,%d) roll: %s" % [_tick_num, dot_data[dot]["dot_id"], cell.x, cell.y, chosen])
 	_execute_primitive(dot, chosen, cce["dials"])
-	var my_cell = _cell_key(dot.position.normalized())
+	var my_cell = _cell_key(_dir_of(dot))
 	var specks_here = speck_cells.get(my_cell, [])
 	if not specks_here.is_empty():
 		dot_data[dot]["collect_lock"] = { "until_tick": _tick_num + 1, "speck": specks_here[0] }
 
-func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
+func _execute_primitive(dot: int, primitive: String, dials: Dictionary):
 	var range_val = dials.get("range", 0.5)
 	var intensity = dials.get("intensity", 0.5)
 	var spiral = dials.get("spiral", 0.0)
@@ -1460,13 +1466,13 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 						best_weight = verb_weight
 						best_key = obs_key
 				if best_key != "":
-					_march_toward_dir(dot, dot.position.normalized(), pending[best_key]["pos"], dot_data[dot]["colony"])
+					_march_toward_dir(dot, _dir_of(dot), pending[best_key]["pos"], dot_data[dot]["colony"])
 					dot_data[dot]["pending_observe"] = null
 					return
 			# Move-MODE (T1.e): the relational biases that used to be their own verbs are now
 			# how `move` expresses. Pick one per fire (linear roulette weighted by the mode CCE,
 			# with an implicit drift baseline), then step accordingly.
-			var dir = dot.position.normalized()
+			var dir = _dir_of(dot)
 			var my_colony = dot_data[dot]["colony"]
 			var modes = dot_data[dot]["cce"].get("modes", {})
 			var move_mode = _pick_move_mode(modes)
@@ -1497,8 +1503,8 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 					var radius3 = int(lerp(float(FACE_SCAN_RADIUS_MIN), float(FACE_SCAN_RADIUS_MAX), range_val))
 					var tgt = _find_nearest_foreign_in_radius(dir, my_colony, radius3)
 					if tgt != null and dot_data.has(tgt):
-						_face_dir(dot, tgt.position.normalized())
-						_march_toward_dir(dot, dir, tgt.position.normalized(), my_colony)
+						_face_dir(dot, _dir_of(tgt))
+						_march_toward_dir(dot, dir, _dir_of(tgt), my_colony)
 					else:
 						_drift(dot, dir, range_val, spiral)
 				_:
@@ -1551,8 +1557,8 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 					# oriented half-thickness wall block, long axis perpendicular to the threat.
 					# Stage (d): the waller then perches on its own segment and locks. Stage (e)
 					# extenders respond to the banner via _execute_build.
-					var my_cell = _cell_key(dot.position.normalized())
-					var threat_dir = target.position.normalized()
+					var my_cell = _cell_key(_dir_of(dot))
+					var threat_dir = _dir_of(target)
 					_drop_wall_banner(my_cell, d_colony, threat_dir)
 					# Only found a segment on a cell free of a prior same-colony block and not
 					# mid-fight; otherwise leave the banner for extenders and march normally.
@@ -1560,7 +1566,7 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 						var seed_block = _create_wall_block(my_cell, d_colony, threat_dir, dot_data[dot]["dot_id"])
 						_perch_waller(dot, seed_block)
 						return  # perched + locked this tick: skip the colony-center march below
-			var dir = dot.position.normalized()
+			var dir = _dir_of(dot)
 			var home = _cached_colony_centers.get(dot_data[dot]["colony"], _cached_colony_center)
 			var toward = (home - dir).normalized()
 			var new_dir = (dir + toward * DEFEND_STEP).normalized()
@@ -1572,7 +1578,7 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 		"spiral_path":
 			# Dedicated spiral motion: a consistent great-circle-tangent step, amplified by
 			# the spiral dial. (Distinct from move's optional spiral bias.)
-			var dir = dot.position.normalized()
+			var dir = _dir_of(dot)
 			var up = Vector3.UP if abs(dir.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
 			var tangent = dir.cross(up).normalized()
 			var nudge = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val) * (1.0 + spiral)
@@ -1580,9 +1586,9 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 		"mark_surface":
 			# Leave a persistent mark at the dot's position, coloured by the dot's own CCE
 			# tint (so a red-tinted culture paints red). Permanence/size scale with intensity.
-			var mat = dot.material_override as StandardMaterial3D
+			var mat = views[dot].material_override as StandardMaterial3D
 			var mark_color = mat.albedo_color if mat != null else Color(1, 1, 1)
-			_create_surface_mark(dot.position.normalized(), mark_color, intensity)
+			_create_surface_mark(_dir_of(dot), mark_color, intensity)
 		"gather":
 			# Directed soul-seeking. March toward the nearest speck this dot has observed;
 			# the ambient collect check at the end of _tick_dot picks it up on arrival, so
@@ -1596,17 +1602,17 @@ func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 			var pending = dot_data[dot]["pending_observe"]
 			var speck_obs = pending["speck"] if pending != null else null
 			if speck_obs != null:
-				_march_toward_dir(dot, dot.position.normalized(), speck_obs["pos"], dot_data[dot]["colony"])
+				_march_toward_dir(dot, _dir_of(dot), speck_obs["pos"], dot_data[dot]["colony"])
 				pending["speck"] = null  # consumed; observe re-banks it on the next sighting
 			else:
-				var dir = dot.position.normalized()
+				var dir = _dir_of(dot)
 				var nudge = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val)
 				var tangent = dir.cross(Vector3(randf_range(-1,1), randf_range(-1,1), randf_range(-1,1))).normalized()
 				_place_dot_on_sphere(dot, (dir + tangent * nudge).normalized(), true)
 
-func _execute_attack(dot: Node3D, intensity: float):
+func _execute_attack(dot: int, intensity: float):
 	var my_colony = dot_data[dot]["colony"]
-	var my_dir = dot.position.normalized()
+	var my_dir = _dir_of(dot)
 	# Observe-gated detection: read the enemy slot written by _execute_observe on a prior
 	# tick instead of self-scanning. Option A clear-on-consume — attack never writes to
 	# pending_observe; the slot is only ever refreshed by the dot's next observe roll.
@@ -1629,7 +1635,7 @@ func _execute_attack(dot: Node3D, intensity: float):
 	else:
 		_march_toward(dot, my_dir, target, my_colony)
 
-func _initiate_combat(attacker: Node3D, defender: Node3D, intensity: float):
+func _initiate_combat(attacker: int, defender: int, intensity: float):
 	combat_locked[attacker] = true
 	combat_locked[defender] = true
 	var ticks = COMBAT_TICKS - (1 if intensity > COMBAT_INTENSITY_THRESHOLD else 0)
@@ -1650,7 +1656,7 @@ func _initiate_combat(attacker: Node3D, defender: Node3D, intensity: float):
 				cluster["locked_cell"] = locked_cell
 				combat_locked_cells[locked_cell] = combat_locked_cells.get(locked_cell, 0) + 1
 	# Drop rally banners for both sides at the contact cell
-	var contact_cell = _cell_key(defender.position.normalized())
+	var contact_cell = _cell_key(_dir_of(defender))
 	_drop_rally_banner(contact_cell, dot_data[attacker]["colony"])
 	_drop_rally_banner(contact_cell, dot_data[defender]["colony"])
 	# Observation-age diagnostic: how stale was the attacker's enemy observation when combat
@@ -1662,11 +1668,11 @@ func _initiate_combat(attacker: Node3D, defender: Node3D, intensity: float):
 		observe_age = _tick_num - attacker_pending["enemy"]["observed_tick"]
 	_telemetry({ "type": "combat_init", "tick": _tick_num, "attacker_colony": dot_data[attacker]["colony"], "defender_colony": dot_data[defender]["colony"], "cell": [contact_cell.x, contact_cell.y], "intensity": intensity, "observe_age": observe_age })
 
-func _march_toward(dot: Node3D, my_dir: Vector3, target: Node3D, my_colony: int):
-	var target_dir = target.position.normalized()
+func _march_toward(dot: int, my_dir: Vector3, target: int, my_colony: int):
+	var target_dir = _dir_of(target)
 	_march_toward_dir(dot, my_dir, target_dir, my_colony)
 
-func _march_toward_dir(dot: Node3D, my_dir: Vector3, target_dir: Vector3, my_colony: int):
+func _march_toward_dir(dot: int, my_dir: Vector3, target_dir: Vector3, my_colony: int):
 	var toward = target_dir - my_dir
 	if toward.length_squared() < PARALLEL_EPSILON:
 		return
@@ -1701,7 +1707,7 @@ func _pick_move_mode(modes: Dictionary) -> String:
 			return k
 	return "drift"
 
-func _drift(dot: Node3D, dir: Vector3, range_val: float, spiral: float) -> void:
+func _drift(dot: int, dir: Vector3, range_val: float, spiral: float) -> void:
 	# Plain undirected move, with the optional spiral-dial bias. This is the body the old
 	# bare `move` case ran; the mode branches fall back to it when their target is absent.
 	var nudge_amount = lerp(MOVE_NUDGE_MIN, MOVE_NUDGE_MAX, range_val)
@@ -1716,9 +1722,9 @@ func _drift(dot: Node3D, dir: Vector3, range_val: float, spiral: float) -> void:
 
 # --- Build (blocks) ---
 
-func _execute_build(dot: Node3D):
+func _execute_build(dot: int):
 	var my_colony = dot_data[dot]["colony"]
-	var my_dir = dot.position.normalized()
+	var my_dir = _dir_of(dot)
 	var my_cell = _cell_key(my_dir)
 	# Wall-banner priority (stages d/e): an active same-colony wall banner in range overrides
 	# ordinary monument building entirely — an existential-threat response. A build-inclined
@@ -1814,11 +1820,11 @@ func _execute_build(dot: Node3D):
 	_drop_build_banner(my_cell, my_colony)
 	# Founder may now return to refresh this banner on subsequent build rolls.
 
-func _execute_observe(dot: Node3D) -> void:
+func _execute_observe(dot: int) -> void:
 	var observe_weight = dot_data[dot]["cce"]["action"].get("observe", 0.0)
 	var radius = int(OBSERVE_BASE_RADIUS + OBSERVE_SCALE * observe_weight)
 	var radius_sq = radius * radius
-	var my_dir = dot.position.normalized()
+	var my_dir = _dir_of(dot)
 	var my_cell = _cell_key(my_dir)
 	var my_colony = dot_data[dot]["colony"]
 
@@ -1826,7 +1832,7 @@ func _execute_observe(dot: Node3D) -> void:
 	var enemy_entry = null
 	var enemy = _find_nearest_foreign_in_radius(my_dir, my_colony, radius)
 	if enemy != null:
-		enemy_entry = { "pos": enemy.position.normalized(), "dot": enemy, "observed_tick": _tick_num }
+		enemy_entry = { "pos": _dir_of(enemy), "dot": enemy, "observed_tick": _tick_num }
 
 	# Speck: nearest speck within radius, scanning the cell window through speck_cells. Same
 	# metric as _torus_cell_dist_sq (u and v both wrap), so it finds what the old full scan did.
@@ -1841,13 +1847,13 @@ func _execute_observe(dot: Node3D) -> void:
 			if speck_cells.has(cell):
 				var speck = speck_cells[cell][0]
 				best_speck_dist = d
-				speck_entry = { "pos": speck.position.normalized(), "node": speck }
+				speck_entry = { "pos": speck_data[speck]["dir"], "node": speck }
 
 	# Ally: nearest same-colony dot (excluding self and blocks)
 	var ally_entry = null
 	var ally = _find_nearest_ally_in_radius(my_dir, my_colony, radius, dot)
 	if ally != null:
-		ally_entry = { "pos": ally.position.normalized(), "dot": ally }
+		ally_entry = { "pos": _dir_of(ally), "dot": ally }
 
 	# Banner: nearest active same-colony build banner within radius
 	# (no build_banners_used filter — observe is sensing, not committing)
@@ -1879,7 +1885,7 @@ func _is_at_or_adjacent(a: Vector2i, b: Vector2i) -> bool:
 	# instead of being clamped to the 8-neighbor ring.
 	return _torus_cell_dist_sq(a, b) <= BUILD_FOOTPRINT_DIST_SQ
 
-func _find_eligible_build_banner(dot: Node3D, my_cell: Vector2i, my_colony: int):
+func _find_eligible_build_banner(dot: int, my_cell: Vector2i, my_colony: int):
 	if build_banners.is_empty():
 		return null
 	# build_banners_used: per-dot set of banner ids this dot has already built on. Written in
@@ -1950,7 +1956,7 @@ func _count_blocks_in_cell(cell: Vector2i, colony: int) -> int:
 				n += 1
 	return n
 
-func _create_block(cell: Vector2i, colony: int, builder_id: int = -1, reason: String = "") -> Node3D:
+func _create_block(cell: Vector2i, colony: int, builder_id: int = -1, reason: String = "") -> int:
 	# Determine stack index by counting same-colony blocks already in this cell
 	var stack_index = 0
 	if spatial_grid.has(cell):
@@ -1964,24 +1970,27 @@ func _create_block(cell: Vector2i, colony: int, builder_id: int = -1, reason: St
 		for occupant in spatial_grid[cell]:
 			if dot_data.has(occupant) and dot_data[occupant].get("is_block", false):
 				dot_data[occupant]["decay_ticks_remaining"] = BLOCK_DECAY_TICKS
-	var block = MeshInstance3D.new()
+	var mesh = MeshInstance3D.new()
 	var box = BoxMesh.new()
 	box.size = BLOCK_MESH_SIZE
-	block.mesh = box
+	mesh.mesh = box
 	var mat = StandardMaterial3D.new()
 	mat.albedo_color = Color.CYAN
 	mat.emission_enabled = true
 	mat.emission = Color.CYAN
 	mat.emission_energy_multiplier = 0.6
-	block.material_override = mat
-	block.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	add_child(block)
+	mesh.material_override = mat
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	add_child(mesh)
+	var block = _new_entity_id()
+	views[block] = mesh
 	dots.append(block)
 	var dir = _cell_to_dir(cell)
 	dot_data[block] = {
 		"age": 0,
 		"cce": _deep_copy_cce(NEUTRAL_CCE),
 		"colony": colony,
+		"dir": dir,
 		"is_block": true,
 		"decay_ticks_remaining": BLOCK_DECAY_TICKS,
 		"stack_index": stack_index,
@@ -1991,12 +2000,12 @@ func _create_block(cell: Vector2i, colony: int, builder_id: int = -1, reason: St
 	known_colonies[colony] = true
 	block_counts[colony] = block_counts.get(colony, 0) + 1
 	# Place the block along the surface normal at stack_index * step above the surface
-	block.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET + stack_index * BLOCK_HEIGHT_STEP)
+	mesh.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET + stack_index * BLOCK_HEIGHT_STEP)
 	var new_basis = Basis()
 	new_basis.y = dir
 	new_basis.x = new_basis.y.cross(Vector3.FORWARD if abs(dir.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT).normalized()
 	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
-	block.transform.basis = new_basis
+	mesh.transform.basis = new_basis
 	_grid_insert(block, cell)
 	_update_dot_color(block)
 	return block
@@ -2006,28 +2015,31 @@ func _create_block(cell: Vector2i, colony: int, builder_id: int = -1, reason: St
 # fixed reference), and this deliberately skips monument stacking (no stack_index scan). It
 # still uses BLOCK_DEFEND_VALUE / decay / is_block so it fights and decays like any other
 # block (per the "blocks are already full combat participants" inspection finding).
-func _create_wall_block(cell: Vector2i, colony: int, threat_dir: Vector3, builder_id: int = -1) -> Node3D:
+func _create_wall_block(cell: Vector2i, colony: int, threat_dir: Vector3, builder_id: int = -1) -> int:
 	if LOG_ENABLED and builder_id >= 0:
 		_log("[t%d] block: builder=%d cell=(%d,%d) reason=waller height=0" % [_tick_num, builder_id, cell.x, cell.y])
-	var block = MeshInstance3D.new()
+	var mesh = MeshInstance3D.new()
 	var box = BoxMesh.new()
 	box.size = WALL_MESH_SIZE
-	block.mesh = box
+	mesh.mesh = box
 	var mat = StandardMaterial3D.new()
 	# Initial colour; _update_dot_color below is the authority (fog / is_wall branch).
 	mat.albedo_color = WALL_COLOR
 	mat.emission_enabled = true
 	mat.emission = WALL_COLOR
 	mat.emission_energy_multiplier = 0.6
-	block.material_override = mat
-	block.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	add_child(block)
+	mesh.material_override = mat
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	add_child(mesh)
+	var block = _new_entity_id()
+	views[block] = mesh
 	dots.append(block)
 	var dir = _cell_to_dir(cell)
 	dot_data[block] = {
 		"age": 0,
 		"cce": _deep_copy_cce(NEUTRAL_CCE),
 		"colony": colony,
+		"dir": dir,
 		"is_block": true,
 		"is_wall": true,  # fence segment (vs monument block); drives the distinct colour in _update_dot_color
 		"decay_ticks_remaining": BLOCK_DECAY_TICKS,
@@ -2036,7 +2048,7 @@ func _create_wall_block(cell: Vector2i, colony: int, threat_dir: Vector3, builde
 	dot_data[block]["cce"]["action"]["defend"] = BLOCK_DEFEND_VALUE
 	known_colonies[colony] = true
 	block_counts[colony] = block_counts.get(colony, 0) + 1
-	block.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
+	mesh.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
 	# Same frame construction as _create_block, but the reference vector is the threat
 	# bearing instead of a fixed world axis. y.cross(v) is always already perpendicular to y
 	# regardless of v's own tilt, so threat_dir need not be pre-projected onto the tangent
@@ -2053,7 +2065,7 @@ func _create_wall_block(cell: Vector2i, colony: int, threat_dir: Vector3, builde
 		ref_dir = Vector3.FORWARD if abs(dir.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT
 	new_basis.x = new_basis.y.cross(ref_dir).normalized()
 	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
-	block.transform.basis = new_basis
+	mesh.transform.basis = new_basis
 	_grid_insert(block, cell)
 	_update_dot_color(block)
 	return block
@@ -2191,7 +2203,7 @@ func _wall_line_target_cell(banner, colony: int) -> Vector2i:
 # fence cell; once standing on it, place an oriented segment there and perch (stage d). While a
 # wall banner is in range this fully replaces monument building — even a full fence just idles
 # the dot rather than letting it fall back to a monument.
-func _respond_to_wall_banner(dot: Node3D, my_dir: Vector3, my_cell: Vector2i, my_colony: int, banner) -> void:
+func _respond_to_wall_banner(dot: int, my_dir: Vector3, my_cell: Vector2i, my_colony: int, banner) -> void:
 	var target_cell = _wall_line_target_cell(banner, my_colony)
 	if target_cell.x < 0:
 		return  # fence full (or degenerate) — idle, do NOT build a monument
@@ -2207,12 +2219,13 @@ func _respond_to_wall_banner(dot: Node3D, my_dir: Vector3, my_cell: Vector2i, my
 
 # Stage (d): lock a dot on top of the wall segment it just built. Forward ref in wall_perch,
 # inverse ref on the block; both are torn down by _remove_dot when either node dies.
-func _perch_waller(dot: Node3D, block: Node3D) -> void:
+func _perch_waller(dot: int, block: int) -> void:
 	wall_perch[dot] = block
 	dot_data[block]["perched_by"] = dot
 	# Sit the dot one block-height above its segment's centre so it reads as perched on top.
-	var perch_dir = block.position.normalized()
-	dot.position = perch_dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET + BLOCK_HEIGHT_STEP)
+	var perch_dir = _dir_of(block)
+	dot_data[dot]["dir"] = perch_dir
+	views[dot].position = perch_dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET + BLOCK_HEIGHT_STEP)
 	if dot_data.has(dot) and dot_cell.has(dot):
 		_grid_update_position(dot)
 
@@ -2234,7 +2247,7 @@ func _torus_cell_dist_sq(a: Vector2i, b: Vector2i) -> int:
 		dy = GRID_RES - dy
 	return dx * dx + dy * dy
 
-func _march_toward_rally_banner(dot: Node3D, my_dir: Vector3, my_colony: int):
+func _march_toward_rally_banner(dot: int, my_dir: Vector3, my_colony: int):
 	if rally_banners.is_empty():
 		return
 	var my_cell = _cell_key(my_dir)
@@ -2297,7 +2310,7 @@ func _tick_combat_clusters():
 				# referencing cells against wall_extend.
 				var defender_is_wall = dot_data[defender].get("is_wall", false)
 				# Capture colonies BEFORE any _remove_dot (deletions are deferred to to_delete below).
-				var _resolve_cell = _cell_key(defender.position.normalized())
+				var _resolve_cell = _cell_key(_dir_of(defender))
 				_telemetry({
 					"type": "combat_resolve",
 					"tick": _tick_num,
@@ -2344,13 +2357,13 @@ func _tick_combat_clusters():
 									break
 						if cell_will_be_empty and not cell_claimed_by.has(defender):
 							cell_claimed_by[defender] = attacker
-							to_advance.append({"winner": attacker, "target_dir": defender.position.normalized()})
+							to_advance.append({"winner": attacker, "target_dir": _dir_of(defender)})
 					else:
 						to_delete[defender] = true
 						# First winning attacker against this defender claims the cell
 						if not cell_claimed_by.has(defender):
 							cell_claimed_by[defender] = attacker
-							to_advance.append({"winner": attacker, "target_dir": defender.position.normalized()})
+							to_advance.append({"winner": attacker, "target_dir": _dir_of(defender)})
 				else:
 					to_delete[attacker] = true
 			for pair in cluster["pairs"]:
@@ -2369,7 +2382,7 @@ func _tick_combat_clusters():
 		if dot_data.has(winner):
 			_place_dot_on_sphere(winner, adv["target_dir"])
 
-func _remove_dot(dot: Node3D):
+func _remove_dot(dot: int):
 	# Synchronous: dot_data is erased here before queue_free, so callers may rely on
 	# dot_data.has(dot) alone for liveness (grid lookups do this, no is_instance_valid).
 	if not dot_data.has(dot):
@@ -2382,7 +2395,7 @@ func _remove_dot(dot: Node3D):
 		if wall_perch.get(perched) == dot:
 			wall_perch.erase(perched)
 			if dot_data.has(perched):
-				_place_dot_on_sphere(perched, perched.position.normalized())
+				_place_dot_on_sphere(perched, _dir_of(perched))
 	if wall_perch.has(dot):
 		var perched_block = wall_perch[dot]
 		wall_perch.erase(dot)
@@ -2434,13 +2447,14 @@ func _remove_dot(dot: Node3D):
 		# player_dot is only read at _ready by spawn functions, never at runtime; a trap
 		# if anything starts reading it mid-game.
 		player_dot = dots[0] if dots.size() > 0 else null
-	dot.queue_free()
+	views[dot].queue_free()
+	views.erase(dot)
 
 # --- Color ---
 
-func _update_dot_color(dot: Node3D):
+func _update_dot_color(dot: int):
 	var colony = dot_data[dot]["colony"]
-	var mat = dot.material_override as StandardMaterial3D
+	var mat = views[dot].material_override as StandardMaterial3D
 	if not mat:
 		return
 	if not revealed_colonies.get(colony, false):
@@ -2499,7 +2513,7 @@ func _compute_all_colony_centers() -> void:
 	var counts = {}
 	for dot in dots:
 		var c = dot_data[dot]["colony"]
-		sums[c] = sums.get(c, Vector3.ZERO) + dot.position.normalized()
+		sums[c] = sums.get(c, Vector3.ZERO) + _dir_of(dot)
 		counts[c] = counts.get(c, 0) + 1
 	_cached_colony_centers.clear()
 	for c in sums:
@@ -2512,7 +2526,7 @@ func _compute_colony_center(colony: int) -> Vector3:
 	var count = 0
 	for dot in dots:
 		if dot_data[dot]["colony"] == colony:
-			center += dot.position.normalized()
+			center += _dir_of(dot)
 			count += 1
 	if count > 0:
 		return (center / count).normalized()
@@ -2528,7 +2542,7 @@ func _check_fog_of_war():
 		var colony = dot_data[dot]["colony"]
 		if colony == LOCAL_COLONY or revealed_colonies.get(colony, false):
 			continue
-		var key = _cell_key(dot.position.normalized())
+		var key = _cell_key(_dir_of(dot))
 		for du in [-1, 0, 1]:
 			for dv in [-1, 0, 1]:
 				# u wraps (longitude); v clamps (latitude — no pole wrap, see F2)
@@ -2547,21 +2561,33 @@ func _check_fog_of_war():
 
 # --- Spatial grid (incrementally maintained) ---
 
+func _new_entity_id() -> int:
+	# One counter for dots, blocks and specks, so an id never means two things.
+	var id = _next_dot_id
+	_next_dot_id += 1
+	return id
+
+func _dir_of(obj: int) -> Vector3:
+	# Separation stage 1: where a dot or block sits on the globe is DATA — the unit direction in
+	# its dot_data record ("dir") — not its mesh's position. Simulation reads go through here;
+	# the mesh is placed to follow the record (_place_dot_on_sphere, _create_block, ...).
+	return dot_data[obj]["dir"]
+
 func _cell_key(dir: Vector3) -> Vector2i:
 	var d = dir.normalized()
 	var u = int((atan2(d.x, d.z) / TAU + 0.5) * GRID_RES) % GRID_RES
 	var v = int((asin(clamp(d.y, -1.0, 1.0)) / PI + 0.5) * GRID_RES) % GRID_RES
 	return Vector2i(u, v)
 
-func _grid_insert(dot: Node3D, key: Vector2i):
+func _grid_insert(dot: int, key: Vector2i):
 	if not spatial_grid.has(key):
 		spatial_grid[key] = []
 	spatial_grid[key].append(dot)
 	dot_cell[dot] = key
 
-func _grid_update_position(dot: Node3D):
+func _grid_update_position(dot: int):
 	# Called after a dot moves \u2014 rehomes it in the grid if its cell changed
-	var new_key = _cell_key(dot.position.normalized())
+	var new_key = _cell_key(_dir_of(dot))
 	var old_key = dot_cell.get(dot, null)
 	if old_key == new_key:
 		return
@@ -2615,7 +2641,7 @@ func _find_nearest_foreign_in_radius(dir: Vector3, my_colony: int, radius: int):
 			if spatial_grid.has(neighbor):
 				for occupant in spatial_grid[neighbor]:
 					if dot_data.has(occupant) and dot_data[occupant]["colony"] != my_colony:
-						var occ_key = dot_cell.get(occupant, _cell_key(occupant.position.normalized()))
+						var occ_key = dot_cell.get(occupant, _cell_key(_dir_of(occupant)))
 						# Box (non-wrapping) distance metric, an accepted choice here;
 						# torus-wrapped distance is used elsewhere (_torus_cell_dist_sq).
 						var d = float((key - occ_key).length_squared())
@@ -2624,7 +2650,7 @@ func _find_nearest_foreign_in_radius(dir: Vector3, my_colony: int, radius: int):
 							best = occupant
 	return best
 
-func _find_nearest_ally_in_radius(dir: Vector3, my_colony: int, radius: int, exclude: Node3D):
+func _find_nearest_ally_in_radius(dir: Vector3, my_colony: int, radius: int, exclude: int):
 	var key = _cell_key(dir)
 	var best = null
 	var best_dist = INF
@@ -2645,7 +2671,7 @@ func _find_nearest_ally_in_radius(dir: Vector3, my_colony: int, radius: int, exc
 						continue
 					if dot_data[occupant]["colony"] != my_colony:
 						continue
-					var occ_key = dot_cell.get(occupant, _cell_key(occupant.position.normalized()))
+					var occ_key = dot_cell.get(occupant, _cell_key(_dir_of(occupant)))
 					# Box (non-wrapping) distance metric, an accepted choice here;
 					# torus-wrapped distance is used elsewhere (_torus_cell_dist_sq).
 					var d = float((key - occ_key).length_squared())
@@ -2673,7 +2699,7 @@ func _get_foreign_dots_near(dir: Vector3, my_colony: int) -> Array:
 # Local centre of mass of same-colony dots within `radius` cells (excluding `exclude` and
 # blocks). Returns Vector3.ZERO if there are no neighbours. Used by cluster (toward) and
 # spread (away). Mirrors the u-wrap / v-clamp neighbourhood walk of the detection scans.
-func _local_ally_center(dir: Vector3, my_colony: int, radius: int, exclude: Node3D) -> Vector3:
+func _local_ally_center(dir: Vector3, my_colony: int, radius: int, exclude: int) -> Vector3:
 	var key = _cell_key(dir)
 	var sum = Vector3.ZERO
 	var count = 0
@@ -2693,7 +2719,7 @@ func _local_ally_center(dir: Vector3, my_colony: int, radius: int, exclude: Node
 						continue
 					if dot_data[occupant]["colony"] != my_colony:
 						continue
-					sum += occupant.position.normalized()
+					sum += _dir_of(occupant)
 					count += 1
 	if count == 0:
 		return Vector3.ZERO
@@ -2701,8 +2727,8 @@ func _local_ally_center(dir: Vector3, my_colony: int, radius: int, exclude: Node
 
 # Orient a dot to face a target direction along the sphere surface, without moving it.
 # y = surface normal; z (forward) = the surface tangent pointing toward the target.
-func _face_dir(dot: Node3D, target_dir: Vector3) -> void:
-	var dir = dot.position.normalized()
+func _face_dir(dot: int, target_dir: Vector3) -> void:
+	var dir = _dir_of(dot)
 	var toward = target_dir - dir
 	if toward.length_squared() < PARALLEL_EPSILON:
 		return
@@ -2715,7 +2741,7 @@ func _face_dir(dot: Node3D, target_dir: Vector3) -> void:
 	new_basis.z = tangent
 	new_basis.x = new_basis.y.cross(new_basis.z).normalized()
 	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
-	dot.transform.basis = new_basis
+	views[dot].transform.basis = new_basis
 
 # --- Dot management ---
 
@@ -2829,7 +2855,7 @@ func _spawn_test_field():
 	_focus_on_colony()
 
 func _spawn_enemy_colony():
-	var player_dir = player_dot.position.normalized()
+	var player_dir = _dir_of(player_dot)
 	var up = Vector3.UP if abs(player_dir.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
 	var perp = player_dir.cross(up).normalized()
 	var enemy_dir = (player_dir * cos(PI / 4.0) + perp * sin(PI / 4.0)).normalized()
@@ -2866,7 +2892,7 @@ func _spawn_test_population():
 	# Disable reproduce on the founder so population stays controlled
 	if player_dot and dot_data.has(player_dot):
 		dot_data[player_dot]["cce"]["action"]["reproduce"] = 0.0
-	var founder_dir = player_dot.position.normalized()
+	var founder_dir = _dir_of(player_dot)
 	var up = Vector3.UP if abs(founder_dir.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
 	var tangent = founder_dir.cross(up).normalized()
 	var bitangent = founder_dir.cross(tangent).normalized()
@@ -2887,12 +2913,12 @@ func _spawn_test_population():
 		spawned += 1
 	print("[test] spawned %d test dots (founder + %d), log: %s" % [spawned + 1, spawned, LOG_FILE])
 
-func _spawn_dot_near(parent: Node3D, colony: int = LOCAL_COLONY):
+func _spawn_dot_near(parent, colony: int = LOCAL_COLONY):
 	if parent == null:
 		return
 	if colony_counts.get(colony, 0) >= MAX_POPULATION_PER_COLONY:
 		return
-	var dir = parent.position.normalized()
+	var dir = _dir_of(parent)
 	var up = Vector3.UP if abs(dir.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
 	var tangent = dir.cross(up).normalized()
 	var bitangent = dir.cross(tangent).normalized()
@@ -2905,19 +2931,21 @@ func _spawn_dot_near(parent: Node3D, colony: int = LOCAL_COLONY):
 		# the false default, so _create_dot runs the dilution branch.
 		_create_dot(new_dir, parent, colony, {})
 
-func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_cce: Dictionary = {}, full_inheritance: bool = false) -> Node3D:
-	var dot = MeshInstance3D.new()
+func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_cce: Dictionary = {}, full_inheritance: bool = false) -> int:
+	var mesh = MeshInstance3D.new()
 	var box = BoxMesh.new()
 	box.size = Vector3(0.015, 0.006, 0.015) / WORLD_SCALE
-	dot.mesh = box
+	mesh.mesh = box
 	var mat = StandardMaterial3D.new()
 	mat.albedo_color = Color.CYAN
 	mat.emission_enabled = true
 	mat.emission = Color.CYAN
 	mat.emission_energy_multiplier = 0.8
-	dot.material_override = mat
-	dot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	add_child(dot)
+	mesh.material_override = mat
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	add_child(mesh)
+	var dot = _new_entity_id()
+	views[dot] = mesh
 	# If this _create_dot came from reproduce during _tick_all_dots, the newborn is
 	# appended to `dots` and ticked in the same pass (see the _tick_all_dots loop note).
 	dots.append(dot)
@@ -2954,13 +2982,12 @@ func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_
 				var base = NEUTRAL_CCE["dials"].get(key, 0.0)
 				cce["dials"][key] = base + (parent_cce["dials"][key] - base) * dilution
 
-	dot_data[dot] = { "age": 0, "cce": cce, "colony": colony, "build_banners_used": {}, "dot_id": _next_dot_id, "pending_observe": null, "collect_lock": null }
-	_next_dot_id += 1
+	dot_data[dot] = { "age": 0, "cce": cce, "colony": colony, "dir": direction.normalized(), "build_banners_used": {}, "dot_id": dot, "pending_observe": null, "collect_lock": null }
 	known_colonies[colony] = true
 	colony_counts[colony] = colony_counts.get(colony, 0) + 1
 	_place_dot_on_sphere(dot, direction)
 	# Insert into spatial grid (initial placement)
-	_grid_insert(dot, _cell_key(dot.position.normalized()))
+	_grid_insert(dot, _cell_key(_dir_of(dot)))
 	_update_dot_color(dot)
 	return dot
 
@@ -2978,36 +3005,40 @@ func _deep_copy_cce(source: Dictionary) -> Dictionary:
 # --- Soul specks ---
 
 func _create_speck(dir: Vector3) -> void:
-	var speck = MeshInstance3D.new()
+	var mesh = MeshInstance3D.new()
 	var box = BoxMesh.new()
 	box.size = Vector3(0.008, 0.003, 0.008) / WORLD_SCALE
-	speck.mesh = box
+	mesh.mesh = box
 	var mat = StandardMaterial3D.new()
 	mat.albedo_color = Color(1.0, 0.85, 0.2)
 	mat.emission_enabled = true
 	mat.emission = Color(1.0, 0.85, 0.2)
 	mat.emission_energy_multiplier = 1.2
-	speck.material_override = mat
-	speck.position = dir.normalized() * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
-	add_child(speck)
+	mesh.material_override = mat
+	mesh.position = dir.normalized() * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
+	add_child(mesh)
+	var speck = _new_entity_id()
+	views[speck] = mesh
 	specks.append(speck)
 	# Index by the cell of the speck's ACTUAL position (what collision used to compare against),
 	# and remember it: specks spawn exactly on cell corners (_cell_to_dir), where recomputing the
 	# key can round into a neighbouring cell and strand a freed speck in the index.
-	var cell = _cell_key(speck.position.normalized())
-	speck.set_meta("cell", cell)
+	var cell = _cell_key(mesh.position.normalized())
+	speck_data[speck] = { "dir": mesh.position.normalized(), "cell": cell }
 	if not speck_cells.has(cell):
 		speck_cells[cell] = []
 	speck_cells[cell].append(speck)
 
-func _remove_speck(speck: Node3D) -> void:
+func _remove_speck(speck: int) -> void:
 	specks.erase(speck)
-	var cell = speck.get_meta("cell")
+	var cell = speck_data[speck]["cell"]
+	speck_data.erase(speck)
 	if speck_cells.has(cell):
 		speck_cells[cell].erase(speck)
 		if speck_cells[cell].is_empty():
 			speck_cells.erase(cell)
-	speck.queue_free()
+	views[speck].queue_free()
+	views.erase(speck)
 
 func _tick_specks() -> void:
 	for _i in range(SPECK_SPAWN_PER_TICK):
@@ -3152,18 +3183,20 @@ func _zoom(delta: float):
 func _on_zoom_slider_changed(value: float):
 	zoom_target = clamp(value, ZOOM_MIN, ZOOM_MAX)
 
-func _place_dot_on_sphere(dot: Node3D, direction: Vector3, check_foreign: bool = false) -> bool:
+func _place_dot_on_sphere(dot: int, direction: Vector3, check_foreign: bool = false) -> bool:
 	if check_foreign:
 		var my_colony = dot_data[dot]["colony"]
 		if _is_blocked_by_foreign(direction, my_colony):
 			return false
 	var dir = direction.normalized()
-	dot.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
+	if dot_data.has(dot):
+		dot_data[dot]["dir"] = dir
+	views[dot].position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
 	var new_basis = Basis()
 	new_basis.y = dir
 	new_basis.x = new_basis.y.cross(Vector3.FORWARD if abs(dir.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT).normalized()
 	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
-	dot.transform.basis = new_basis
+	views[dot].transform.basis = new_basis
 	# Update spatial grid for the new position (only if dot is fully registered)
 	if dot_data.has(dot) and dot_cell.has(dot):
 		_grid_update_position(dot)

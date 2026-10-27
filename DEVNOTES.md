@@ -2424,12 +2424,12 @@ Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open aga
 
 ---
 
-## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED; separation stage 1 uncommitted on top.)
+## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale, separation stages 1–2; stage 3 uncommitted on top.)
 
 Fresh session: read THIS entry, then the 2026-10-27 word-cloud entry and the 2026-10-23 entry above, `RECONCILIATION.md` (S.b update, CLIENT / UX), and the bible.
 
 ### Git
-PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. The world scaling and the 50-colony field are committed + pushed; separation stage 1 (below) is uncommitted on top.
+PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–2 are committed + pushed; stage 3 is uncommitted on top.
 
 ### Multiplayer decisions (Dustan) — RECONCILIATION S.b
 1. **Server-side authority** (bible §14). The server runs the whole simulation; clients render it and send chants. Bible §15.2's `/sync` (clients upload their own dots) is dropped: it contradicts §14, and offline colonies need a server simulation anyway.
@@ -2469,4 +2469,24 @@ Dustan liked the 50-colony look. On how the world should grow with player count,
 4. **Extract `world_sim.gd`:** state + tick in a node-free script; `main.gd` becomes the client (camera, UI, word cloud, sky/sun, view). The active/passive clocks get built here.
 5. **Batched drawing:** MultiMesh for dots, blocks, specks and marks.
 6. **Headless proof:** a server scene ticks `world_sim.gd` with no rendering and writes telemetry.
-Baseline for before/after telemetry comparison: the 50-colony run on the 447 grid. Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
+Baseline for before/after telemetry comparison: the 50-colony run on the 447 grid.
+
+### Separation stage 1 — positions are data
+- Every dot and block record in `dot_data` has a **`"dir"`** (unit direction on the globe). It's set at birth (`_create_dot`, `_create_block`, `_create_wall_block`), on every move (`_place_dot_on_sphere` writes the record *before* moving the mesh) and on perching (`_perch_waller`).
+- All **40 simulation reads** of `X.position.normalized()` now call **`_dir_of(X)`**: grid keys, marching, combat cells and target bearings, cohesion and colony centres, observation entries, fog, spawning and perch release. Each new read was checked to sit behind a `dot_data.has()` guard where the target could be gone; combat resolution already defers deletions.
+- Specks get a record: **`speck_data[speck] = { "dir", "cell" }`** (replacing the `set_meta("cell")` tag from the crash fix); observe reads the speck's dir from it.
+- What still touches `.position`: only writes where the mesh follows the record, the speck's one-time record creation, marks (purely visual, no simulation reads), and the camera and touch input. Node references are still the keys — that's stage 2.
+- Behaviour should be identical; float results can differ only at the last bit in places that used to normalise `position` (direction × radius), so runs aren't bit-identical anyway (RNG order is unchanged in this stage).
+- `validate_script` clean; **not run in Godot by Claude.** Verify with a normal 50-colony run: same look, gathering, building, walls/perches, combat.
+
+### Separation stage 2 — integer ids are the keys
+- Dots, blocks and specks are **integer entity ids** from one counter (`_new_entity_id`, reusing `_next_dot_id`, starting at 1). `dots`, `dot_data`, `spatial_grid`/`dot_cell`, `combat_locked`, `cluster_by_defender`, combat pairs, `wall_perch` and `perched_by`, `pending_observe` entries, `collect_lock`, `specks`, `speck_cells` and `speck_data` all hold ids now.
+- **`views`** (id → MeshInstance3D) is the only link to meshes. The creators (`_create_dot`, `_create_block`, `_create_wall_block`, `_create_speck`) build the mesh, mint an id and file the mesh under it. Every position, basis, material and free goes through `views[id]` (placement, perch, `_face_dir`, `_update_dot_color`, the mark colour, `_remove_dot`, `_remove_speck`).
+- 26 function signatures retyped `Node3D` → `int`; `_spawn_dot_near`'s `parent` is left untyped because it's null-checked. A dot's `dot_id` now equals its key; ids are shared with blocks and specks, so `dot_id`s are no longer consecutive.
+- Audited: no remaining engine-object calls on ids, no truthiness tests on entity references, no node-typed arrays. Marks are still plain nodes (no simulation reads them) — stage 3.
+- `validate_script` clean.
+- **Verified by Dustan's run `1793121699`** (50 colonies, 96 ticks) against the pre-refactor 50-colony run `1793119939` (45 ticks): **no runtime errors** (only the 3 known script warnings); all 50 colonies alive at t96.
+  - **Behaviour mix t30–45** within about 1 point on every verb (old → new): reproduce .219/.219, move .219/.210, observe .121/.125, gather .082/.091, build .078/.080, attack .056/.054, defend .055/.054.
+  - **Growth** similar (live t30 4,653 / 4,015; blocks 1,059 / 1,079).
+  - **Exercised:** combat (546 resolutions), walls and perches (51 wall banners, 29 extensions), and gathering (specks net +15/tick against 25 spawned, so about 10/tick collected; soul accrues).
+  - **Load at t96:** 22,179 dots + 12,690 blocks ≈ 35k individual nodes, which is why ticks crawl late in a run. Stage 5 (batched drawing) targets this. Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
