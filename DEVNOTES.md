@@ -2424,12 +2424,12 @@ Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open aga
 
 ---
 
-## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale, separation stages 1–5.)
+## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale + separation stages 1–6; PR open into `main`.)
 
 Fresh session: read THIS entry, then the 2026-10-27 word-cloud entry and the 2026-10-23 entry above, `RECONCILIATION.md` (S.b update, CLIENT / UX), and the bible.
 
 ### Git
-PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–5 are committed + pushed. Stage 6 (headless proof) not started.
+PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–6 are committed + pushed, with a PR open into `main`.
 
 ### Multiplayer decisions (Dustan) — RECONCILIATION S.b
 1. **Server-side authority** (bible §14). The server runs the whole simulation; clients render it and send chants. Bible §15.2's `/sync` (clients upload their own dots) is dropped: it contradicts §14, and offline colonies need a server simulation anyway.
@@ -2459,7 +2459,7 @@ PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2
 ### Verify
 `validate_script` clean; scaled constants confirmed in the editor (GRID_RES 447, CELL_STEP 0.01406 vs block width 0.01386, so blocks still tile; specks 25/tick, cap 7500). **Not run in Godot by Claude.** Check: the colonies' size on the globe and the spacing between them; zooming in close; monuments still tiling; specks and gathering still working (soul still flows); and whether tick time got better or worse.
 
-### Agreed next: separate the simulation from the visuals (before clocks and growth) — stages 1–5 done
+### Agreed next: separate the simulation from the visuals (before clocks and growth) — stages 1–6 done
 Dustan liked the 50-colony look. On how the world should grow with player count, the options were tiered resizing, one big sphere filled outward from placement, or a new world when one fills. Dustan leans toward tiered growth as most future-proof, but the decision is deferred until after the separation, because moving whole colonies (resizing without tearing monuments and walls apart) is far simpler once state is plain data. Placement and a per-world size are needed under any option.
 
 **Separation plan (each stage behaviour-preserving, validated, run by Dustan, own commit):**
@@ -2532,4 +2532,14 @@ Baseline for before/after telemetry comparison: the 50-colony run on the 447 gri
 - **Run by Dustan, `1793125207`** (50 colonies, 65 ticks): **no runtime errors**; all 50 alive at t65.
   - Counts and behaviour mix match stages 1–4 (t45 live / blocks / specks 11,293 / 2,403 / 966; mix within about 2 points). Combat 97 resolutions and 10 wall banners by t65. Three 5-word word-cloud chants fully matched.
   - Three new warnings from the stage 5 code (locals `visible` and `basis` shadowing Node3D properties; `dir` declared twice in `_entity_transform`) were fixed by renaming them `shown`, `frame` and `mark_dir`.
-- **Perf finding:** tick throughput is about the same as before: 65 ticks in about 96 s (~1.5 s/tick at 18.7k dots + 5.6k blocks), against stage 3's 61 ticks in about 85 s (~1.4 s/tick at fewer blocks). Per-tick time is dominated by the **simulation** (GDScript over ~18k dots, once per second), not drawing, so batching cuts render and node-update cost but not the once-a-second stall. **Visuals confirmed by Dustan:** "Visuals looked right." **If the stall matters later:** the sim is now node-free, so `sim.tick()` could run on a worker thread (the client double-buffers the view changes), or the hot loops could move to compiled code. Not pursued: perf isn't a priority. Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
+- **Perf finding:** tick throughput is about the same as before: 65 ticks in about 96 s (~1.5 s/tick at 18.7k dots + 5.6k blocks), against stage 3's 61 ticks in about 85 s (~1.4 s/tick at fewer blocks). Per-tick time is dominated by the **simulation** (GDScript over ~18k dots, once per second), not drawing, so batching cuts render and node-update cost but not the once-a-second stall. **Visuals confirmed by Dustan:** "Visuals looked right." **If the stall matters later:** the sim is now node-free, so `sim.tick()` could run on a worker thread (the client double-buffers the view changes), or the hot loops could move to compiled code. Not pursued: perf isn't a priority.
+
+### Separation stage 6 — headless server proof
+- **`server.gd` + `server.tscn`** (root `Node`): creates a `WorldSim`, `setup()`, then `tick()` every `TICK_SECONDS` (1.0, the client's pace) with no camera, meshes or UI. Telemetry is written by the sim as usual, plus a `{"type": "headless", "max_ticks", "fast"}` record right after `run_start` so headless runs can be told apart. Chants can be injected through `res://chant.json`. The server **drains `take_view_changes()` every tick** (nothing draws them, so they'd pile up).
+- **Run:** `/Applications/Godot.app/Contents/MacOS/Godot --headless --path <project> res://server.tscn -- --ticks N [--fast]`. `--fast` ticks every frame, measuring pure simulation cost; each tick prints `t, live, blocks, specks, tick ms`, and it ends with the mean ms/tick. The game's main scene is still `main.tscn`.
+- `validate_script` clean; the scene loads with the right root and script.
+- **Run by Claude at Dustan's request** (`--ticks 60 --fast`, run `1793125987`): **exit 0, 60 ticks in 28 s wall**, no errors or addon noise. Telemetry tagged (`run_start` then `{"type": "headless", "fast": true, "max_ticks": 60}`).
+  - **Matches the client runs:** t45 live / blocks / specks 11,207 / 2,387 / 990 against 10,289–11,293 / 2,114–2,403 / 966–991; mix t30–45 within about 1.5 points; all 50 alive at t60; 50 combat resolutions, 4 wall banners, 45k blend contacts.
+  - **Pure simulation cost per tick** (no rendering): t10 48 ms (985 dots) · t30 245 ms (4.4k) · t45 800 ms (11.2k) · t60 **1,972 ms (18.1k dots + 4.2k blocks)**; mean 458 ms. **Cost per live dot rises with crowding: ~50 µs at t10–25 → ~109 µs at t60** (neighbour scans, combat and blending grow with local density). That is the once-a-second stall: at full 50-colony load the sim alone needs about 2 s per tick.
+  - **For the server, this is fine:** the agreed production clock ticks every 30 s (active colonies), so about 2 s of simulation is around 7% of the budget. Only the 1 s test tick outruns it. If perf is ever wanted, the per-dot cost under crowding is the target.
+- **Separation plan complete (stages 1–6).** Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
