@@ -189,7 +189,7 @@ const TEST_FIELD = true
 const TEST_FIELD_REVEAL_ALL = true    # bypass fog so every field colony is observable from tick 0
 const TEST_FIELD_DISCRETE_COLORS = true  # colour dots by colony (see COLONY_PALETTE) instead of
 										 # by CCE tint, so specs are told apart at a glance. The CCE
-										 # colouring in _update_dot_color is untouched and returns
+										 # colouring in _dot_colors is untouched and returns
 										 # when this is false.
 const TEST_FIELD_SEED_POP = 8         # dots each colony starts with (founder + neighbours);
 										 # >1 so a colony can't die to spawn RNG before reproducing.
@@ -624,9 +624,18 @@ const WordCloud = preload("res://word_cloud.gd")
 
 var dots = []        # entity ids (dots AND blocks) — separation stage 2: ids, not nodes, are the keys
 var dot_data = {}    # entity id -> record
-# entity id -> its MeshInstance3D (dots, blocks, specks). Only drawing code touches meshes;
+# entity id -> its MeshInstance3D (dots, blocks, specks, marks). Only the view section touches meshes;
 # the simulation addresses everything by id.
 var views = {}
+# View sync (separation stage 3). The simulation never touches meshes: it flags entities whose
+# look changed (_view_touch: VIEW_PLACE = moved / spawned / perched / turned, VIEW_COLOR =
+# recoloured) and those removed (_view_remove), and _sync_views — every frame from _process —
+# builds, moves, recolours and frees meshes to match. These flags are the diff a server will
+# later send to clients.
+const VIEW_PLACE = 1
+const VIEW_COLOR = 2
+var _view_dirty = {}   # entity id -> VIEW_* bits
+var _view_gone = []    # entity ids removed since the last sync
 var specks = []
 # Test field, built in _ready by _build_test_field: per-colony archetype spec and { name, color }.
 var _field_specs = []
@@ -637,7 +646,9 @@ var _field_colors = []
 var speck_cells = {}
 # speck -> { "dir": unit direction, "cell": Vector2i } — a speck's place is data, not its mesh.
 var speck_data = {}
-var surface_marks = []  # [{node: MeshInstance3D, ticks_remaining: int}] — mark_surface output, decays by TTL
+var surface_marks = []  # mark ids — mark_surface output, decays by TTL
+# mark id -> { "dir", "color", "size", "ticks_remaining" } — a mark is data; the view draws it.
+var mark_data = {}
 # Per-tick tally of primitives selected by LOCAL_COLONY dots. Reset at the top of each
 # tick's dot pass, read into the telemetry snapshot at the end of the same tick.
 var _primitive_counts = {}
@@ -856,6 +867,7 @@ func _process(delta):
 				"marks": surface_marks.size()
 			})
 			_blend_counts.clear()
+	_sync_views()
 
 # --- Chant file ---
 
@@ -1586,8 +1598,7 @@ func _execute_primitive(dot: int, primitive: String, dials: Dictionary):
 		"mark_surface":
 			# Leave a persistent mark at the dot's position, coloured by the dot's own CCE
 			# tint (so a red-tinted culture paints red). Permanence/size scale with intensity.
-			var mat = views[dot].material_override as StandardMaterial3D
-			var mark_color = mat.albedo_color if mat != null else Color(1, 1, 1)
+			var mark_color = _dot_colors(dot)[0]
 			_create_surface_mark(_dir_of(dot), mark_color, intensity)
 		"gather":
 			# Directed soul-seeking. March toward the nearest speck this dot has observed;
@@ -1970,20 +1981,7 @@ func _create_block(cell: Vector2i, colony: int, builder_id: int = -1, reason: St
 		for occupant in spatial_grid[cell]:
 			if dot_data.has(occupant) and dot_data[occupant].get("is_block", false):
 				dot_data[occupant]["decay_ticks_remaining"] = BLOCK_DECAY_TICKS
-	var mesh = MeshInstance3D.new()
-	var box = BoxMesh.new()
-	box.size = BLOCK_MESH_SIZE
-	mesh.mesh = box
-	var mat = StandardMaterial3D.new()
-	mat.albedo_color = Color.CYAN
-	mat.emission_enabled = true
-	mat.emission = Color.CYAN
-	mat.emission_energy_multiplier = 0.6
-	mesh.material_override = mat
-	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	add_child(mesh)
 	var block = _new_entity_id()
-	views[block] = mesh
 	dots.append(block)
 	var dir = _cell_to_dir(cell)
 	dot_data[block] = {
@@ -1999,15 +1997,8 @@ func _create_block(cell: Vector2i, colony: int, builder_id: int = -1, reason: St
 	dot_data[block]["cce"]["action"]["defend"] = BLOCK_DEFEND_VALUE
 	known_colonies[colony] = true
 	block_counts[colony] = block_counts.get(colony, 0) + 1
-	# Place the block along the surface normal at stack_index * step above the surface
-	mesh.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET + stack_index * BLOCK_HEIGHT_STEP)
-	var new_basis = Basis()
-	new_basis.y = dir
-	new_basis.x = new_basis.y.cross(Vector3.FORWARD if abs(dir.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT).normalized()
-	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
-	mesh.transform.basis = new_basis
 	_grid_insert(block, cell)
-	_update_dot_color(block)
+	_view_touch(block, VIEW_PLACE | VIEW_COLOR)
 	return block
 
 # Stage (c): a lone waller's wall block. Separate from _create_block rather than a shared
@@ -2018,21 +2009,7 @@ func _create_block(cell: Vector2i, colony: int, builder_id: int = -1, reason: St
 func _create_wall_block(cell: Vector2i, colony: int, threat_dir: Vector3, builder_id: int = -1) -> int:
 	if LOG_ENABLED and builder_id >= 0:
 		_log("[t%d] block: builder=%d cell=(%d,%d) reason=waller height=0" % [_tick_num, builder_id, cell.x, cell.y])
-	var mesh = MeshInstance3D.new()
-	var box = BoxMesh.new()
-	box.size = WALL_MESH_SIZE
-	mesh.mesh = box
-	var mat = StandardMaterial3D.new()
-	# Initial colour; _update_dot_color below is the authority (fog / is_wall branch).
-	mat.albedo_color = WALL_COLOR
-	mat.emission_enabled = true
-	mat.emission = WALL_COLOR
-	mat.emission_energy_multiplier = 0.6
-	mesh.material_override = mat
-	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	add_child(mesh)
 	var block = _new_entity_id()
-	views[block] = mesh
 	dots.append(block)
 	var dir = _cell_to_dir(cell)
 	dot_data[block] = {
@@ -2041,33 +2018,16 @@ func _create_wall_block(cell: Vector2i, colony: int, threat_dir: Vector3, builde
 		"colony": colony,
 		"dir": dir,
 		"is_block": true,
-		"is_wall": true,  # fence segment (vs monument block); drives the distinct colour in _update_dot_color
+		"is_wall": true,  # fence segment (vs monument block); drives the distinct colour in _dot_colors
+		"threat_dir": threat_dir,  # the wall's long axis runs across this bearing (_wall_basis)
 		"decay_ticks_remaining": BLOCK_DECAY_TICKS,
 		"stack_index": 0,
 	}
 	dot_data[block]["cce"]["action"]["defend"] = BLOCK_DEFEND_VALUE
 	known_colonies[colony] = true
 	block_counts[colony] = block_counts.get(colony, 0) + 1
-	mesh.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
-	# Same frame construction as _create_block, but the reference vector is the threat
-	# bearing instead of a fixed world axis. y.cross(v) is always already perpendicular to y
-	# regardless of v's own tilt, so threat_dir need not be pre-projected onto the tangent
-	# plane. Chosen orientation (per design decision): x = tangent PERPENDICULAR to the
-	# threat (the wall's long axis, forming a barrier across the enemy's path); z = tangent
-	# TOWARD/away the threat (the thin axis, the wall's thickness facing the enemy).
-	var new_basis = Basis()
-	new_basis.y = dir
-	var ref_dir = threat_dir
-	if abs(dir.dot(threat_dir.normalized())) > 0.999:
-		# Degenerate: enemy direction ~parallel to the surface normal here. Fall back to the
-		# same reference _create_block uses so the mesh still gets a valid orthonormal frame
-		# instead of a NaN basis from a near-zero cross product.
-		ref_dir = Vector3.FORWARD if abs(dir.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT
-	new_basis.x = new_basis.y.cross(ref_dir).normalized()
-	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
-	mesh.transform.basis = new_basis
 	_grid_insert(block, cell)
-	_update_dot_color(block)
+	_view_touch(block, VIEW_PLACE | VIEW_COLOR)
 	return block
 
 # --- Build banners ---
@@ -2218,14 +2178,14 @@ func _respond_to_wall_banner(dot: int, my_dir: Vector3, my_cell: Vector2i, my_co
 		_march_toward_dir(dot, my_dir, _cell_to_dir(target_cell), my_colony)
 
 # Stage (d): lock a dot on top of the wall segment it just built. Forward ref in wall_perch,
-# inverse ref on the block; both are torn down by _remove_dot when either node dies.
+# inverse ref on the block; both are torn down by _remove_dot when either entity dies.
 func _perch_waller(dot: int, block: int) -> void:
 	wall_perch[dot] = block
 	dot_data[block]["perched_by"] = dot
 	# Sit the dot one block-height above its segment's centre so it reads as perched on top.
 	var perch_dir = _dir_of(block)
 	dot_data[dot]["dir"] = perch_dir
-	views[dot].position = perch_dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET + BLOCK_HEIGHT_STEP)
+	_view_touch(dot, VIEW_PLACE)  # the view lifts a perched dot one block-height (_view_place)
 	if dot_data.has(dot) and dot_cell.has(dot):
 		_grid_update_position(dot)
 
@@ -2447,20 +2407,180 @@ func _remove_dot(dot: int):
 		# player_dot is only read at _ready by spawn functions, never at runtime; a trap
 		# if anything starts reading it mid-game.
 		player_dot = dots[0] if dots.size() > 0 else null
-	views[dot].queue_free()
-	views.erase(dot)
+	_view_remove(dot)
+
+# --- View (separation stage 3): meshes follow the data, never the other way round ---
+
+func _view_touch(id: int, what: int) -> void:
+	_view_dirty[id] = _view_dirty.get(id, 0) | what
+
+func _view_remove(id: int) -> void:
+	_view_dirty.erase(id)
+	_view_gone.append(id)
+
+func _sync_views() -> void:
+	# Free the removed, build the new, then move / recolour the flagged. Cheap when nothing changed.
+	for id in _view_gone:
+		if views.has(id):
+			views[id].queue_free()
+			views.erase(id)
+	_view_gone.clear()
+	for id in _view_dirty:
+		var what = _view_dirty[id]
+		if not views.has(id):
+			var mesh = _view_build(id)
+			if mesh == null:
+				continue
+			views[id] = mesh
+			what = VIEW_PLACE | VIEW_COLOR
+		if what & VIEW_PLACE:
+			_view_place(id)
+		if what & VIEW_COLOR:
+			_view_color(id)
+	_view_dirty.clear()
+
+func _view_build(id: int):
+	# A mesh for whatever kind of entity `id` is, or null if it no longer exists. Colour and
+	# placement are applied separately (_view_color, _view_place).
+	var size: Vector3
+	var energy: float
+	if dot_data.has(id):
+		if dot_data[id].get("is_wall", false):
+			size = WALL_MESH_SIZE
+			energy = 0.6
+		elif dot_data[id].get("is_block", false):
+			size = BLOCK_MESH_SIZE
+			energy = 0.6
+		else:
+			size = Vector3(0.015, 0.006, 0.015) / WORLD_SCALE
+			energy = 0.8
+	elif speck_data.has(id):
+		size = Vector3(0.008, 0.003, 0.008) / WORLD_SCALE
+		energy = 1.2
+	elif mark_data.has(id):
+		var s = mark_data[id]["size"]
+		size = Vector3(s, 0.001 / WORLD_SCALE, s)
+		energy = 0.4
+	else:
+		return null
+	var mesh = MeshInstance3D.new()
+	var box = BoxMesh.new()
+	box.size = size
+	mesh.mesh = box
+	var mat = StandardMaterial3D.new()
+	mat.emission_enabled = true
+	mat.emission_energy_multiplier = energy
+	mesh.material_override = mat
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	add_child(mesh)
+	return mesh
+
+func _view_place(id: int) -> void:
+	var mesh = views[id]
+	if dot_data.has(id):
+		var d = dot_data[id]
+		var dir = d["dir"]
+		if d.get("is_wall", false):
+			mesh.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
+			mesh.transform.basis = _wall_basis(dir, d["threat_dir"])
+		elif d.get("is_block", false):
+			# Stacked along the surface normal, stack_index steps above the surface.
+			mesh.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET + d["stack_index"] * BLOCK_HEIGHT_STEP)
+			mesh.transform.basis = _surface_basis(dir)
+		else:
+			# A perched waller sits one block-height up, on top of its wall segment.
+			var lift = BLOCK_HEIGHT_STEP if wall_perch.has(id) else 0.0
+			mesh.position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET + lift)
+			mesh.transform.basis = _surface_basis(dir) if d.get("facing") == null else _facing_basis(dir, d["facing"])
+	elif speck_data.has(id):
+		mesh.position = speck_data[id]["dir"] * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
+	elif mark_data.has(id):
+		var dir = mark_data[id]["dir"]
+		# Straddle the surface rather than float above it: centred exactly ON the sphere, so the
+		# tile is half embedded and sits 0.0005 proud — it reads as paint, not as a tile hovering
+		# over the ground. (It previously sat at +0.00375, over 3x its own 0.001 thickness above
+		# the surface.) Marks are the one thing that must be IN the sphere, not on top of it, so
+		# they deliberately do not use DOT_SURFACE_OFFSET the way dots and blocks do.
+		# Curvature is negligible at this size: a 0.014 tile's corners rise ~5e-5 off the tangent
+		# plane, a tenth of the protrusion, so the whole quad stays seated.
+		mesh.position = dir * SPHERE_RADIUS
+		mesh.transform.basis = _surface_basis(dir)
+
+func _view_color(id: int) -> void:
+	var albedo: Color
+	var emission: Color
+	if dot_data.has(id):
+		var c = _dot_colors(id)
+		albedo = c[0]
+		emission = c[1]
+	elif speck_data.has(id):
+		albedo = Color(1.0, 0.85, 0.2)
+		emission = albedo
+	elif mark_data.has(id):
+		albedo = mark_data[id]["color"]
+		emission = albedo
+	else:
+		return
+	var mat = views[id].material_override as StandardMaterial3D
+	mat.albedo_color = albedo
+	mat.emission = emission
+
+func _surface_basis(dir: Vector3) -> Basis:
+	# y = the surface normal; x/z span the tangent plane against a fixed world reference axis.
+	var b = Basis()
+	b.y = dir
+	b.x = b.y.cross(Vector3.FORWARD if abs(dir.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT).normalized()
+	b.z = b.x.cross(b.y).normalized()
+	return b
+
+func _facing_basis(dir: Vector3, target_dir: Vector3) -> Basis:
+	# Surface frame turned so z points along the surface toward target_dir (_face_dir).
+	var toward = target_dir - dir
+	if toward.length_squared() < PARALLEL_EPSILON:
+		return _surface_basis(dir)
+	var tangent = dir.cross(toward)
+	if tangent.length_squared() < PARALLEL_EPSILON:
+		return _surface_basis(dir)
+	tangent = tangent.cross(dir).normalized()  # tangent aimed at the target along the surface
+	var b = Basis()
+	b.y = dir
+	b.z = tangent
+	b.x = b.y.cross(b.z).normalized()
+	b.z = b.x.cross(b.y).normalized()
+	return b
+
+func _wall_basis(dir: Vector3, threat_dir: Vector3) -> Basis:
+	# Same frame construction as _surface_basis, but the reference vector is the threat
+	# bearing instead of a fixed world axis. y.cross(v) is always already perpendicular to y
+	# regardless of v's own tilt, so threat_dir need not be pre-projected onto the tangent
+	# plane. Chosen orientation (per design decision): x = tangent PERPENDICULAR to the
+	# threat (the wall's long axis, forming a barrier across the enemy's path); z = tangent
+	# TOWARD/away the threat (the thin axis, the wall's thickness facing the enemy).
+	var new_basis = Basis()
+	new_basis.y = dir
+	var ref_dir = threat_dir
+	if abs(dir.dot(threat_dir.normalized())) > 0.999:
+		# Degenerate: enemy direction ~parallel to the surface normal here. Fall back to the
+		# same reference _create_block uses so the mesh still gets a valid orthonormal frame
+		# instead of a NaN basis from a near-zero cross product.
+		ref_dir = Vector3.FORWARD if abs(dir.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT
+	new_basis.x = new_basis.y.cross(ref_dir).normalized()
+	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
+	return new_basis
 
 # --- Color ---
 
 func _update_dot_color(dot: int):
+	# Its look may have changed (CCE, fog, palette): flag it; _sync_views recolours the mesh.
+	_view_touch(dot, VIEW_COLOR)
+
+func _dot_colors(dot: int) -> Array:
+	# [albedo, emission] for a dot or block from its data alone — fog, the field palette, the wall
+	# colour or the CCE tint. Used by the view (_view_color) and by mark_surface, which paints in
+	# its maker's colour.
 	var colony = dot_data[dot]["colony"]
-	var mat = views[dot].material_override as StandardMaterial3D
-	if not mat:
-		return
 	if not revealed_colonies.get(colony, false):
-		mat.albedo_color = FOG_COLOR
-		mat.emission = FOG_EMISSION
-		return
+		return [FOG_COLOR, FOG_EMISSION]
 	# Test-run overlay: colour by colony identity, not CCE, so specs are told apart at a glance.
 	# Returns before the CCE/wall logic below, which is left fully intact for the flag-off path.
 	# Blocks (monuments AND wall segments) render a dimmed shade so structures read as darker
@@ -2470,15 +2590,11 @@ func _update_dot_color(dot: int):
 		var cc = _field_colors[colony]["color"]
 		if dot_data[dot].get("is_block", false):
 			cc = cc.darkened(0.45)
-		mat.albedo_color = cc
-		mat.emission = cc
-		return
+		return [cc, cc]
 	# Fence segments render a fixed distinct colour (after fog, so hidden colonies still fog),
 	# rather than the CCE mix — otherwise they'd be identical to defend-blue monument blocks.
 	if dot_data[dot].get("is_wall", false):
-		mat.albedo_color = WALL_COLOR
-		mat.emission = WALL_COLOR
-		return
+		return [WALL_COLOR, WALL_COLOR]
 	var cce = dot_data[dot]["cce"]
 	var total = 0.0
 	var weighted = Color(0, 0, 0, 0)
@@ -2498,8 +2614,7 @@ func _update_dot_color(dot: int):
 	if total > 0.0:
 		hue_color = Color(weighted.r / total, weighted.g / total, weighted.b / total)
 	var color = CCE_NEUTRAL_COLOR.lerp(hue_color, saturation)
-	mat.albedo_color = color
-	mat.emission = color
+	return [color, color]
 
 func _update_all_dot_colors():
 	for dot in dots:
@@ -2570,7 +2685,7 @@ func _new_entity_id() -> int:
 func _dir_of(obj: int) -> Vector3:
 	# Separation stage 1: where a dot or block sits on the globe is DATA — the unit direction in
 	# its dot_data record ("dir") — not its mesh's position. Simulation reads go through here;
-	# the mesh is placed to follow the record (_place_dot_on_sphere, _create_block, ...).
+	# the mesh is placed to follow the record by the view (_view_place).
 	return dot_data[obj]["dir"]
 
 func _cell_key(dir: Vector3) -> Vector2i:
@@ -2728,22 +2843,16 @@ func _local_ally_center(dir: Vector3, my_colony: int, radius: int, exclude: int)
 # Orient a dot to face a target direction along the sphere surface, without moving it.
 # y = surface normal; z (forward) = the surface tangent pointing toward the target.
 func _face_dir(dot: int, target_dir: Vector3) -> void:
+	# Turn the dot toward target_dir along the surface. The heading is data ("facing"); the view
+	# builds the matching basis (_facing_basis), and the dot's next move clears it.
 	var dir = _dir_of(dot)
 	var toward = target_dir - dir
 	if toward.length_squared() < PARALLEL_EPSILON:
 		return
-	var tangent = dir.cross(toward)
-	if tangent.length_squared() < PARALLEL_EPSILON:
+	if dir.cross(toward).length_squared() < PARALLEL_EPSILON:
 		return
-	tangent = tangent.cross(dir).normalized()  # tangent aimed at the target along the surface
-	var new_basis = Basis()
-	new_basis.y = dir
-	new_basis.z = tangent
-	new_basis.x = new_basis.y.cross(new_basis.z).normalized()
-	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
-	views[dot].transform.basis = new_basis
-
-# --- Dot management ---
+	dot_data[dot]["facing"] = target_dir
+	_view_touch(dot, VIEW_PLACE)
 
 func _age_dots():
 	var to_remove = []
@@ -2932,20 +3041,7 @@ func _spawn_dot_near(parent, colony: int = LOCAL_COLONY):
 		_create_dot(new_dir, parent, colony, {})
 
 func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_cce: Dictionary = {}, full_inheritance: bool = false) -> int:
-	var mesh = MeshInstance3D.new()
-	var box = BoxMesh.new()
-	box.size = Vector3(0.015, 0.006, 0.015) / WORLD_SCALE
-	mesh.mesh = box
-	var mat = StandardMaterial3D.new()
-	mat.albedo_color = Color.CYAN
-	mat.emission_enabled = true
-	mat.emission = Color.CYAN
-	mat.emission_energy_multiplier = 0.8
-	mesh.material_override = mat
-	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	add_child(mesh)
 	var dot = _new_entity_id()
-	views[dot] = mesh
 	# If this _create_dot came from reproduce during _tick_all_dots, the newborn is
 	# appended to `dots` and ticked in the same pass (see the _tick_all_dots loop note).
 	dots.append(dot)
@@ -2982,7 +3078,7 @@ func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_
 				var base = NEUTRAL_CCE["dials"].get(key, 0.0)
 				cce["dials"][key] = base + (parent_cce["dials"][key] - base) * dilution
 
-	dot_data[dot] = { "age": 0, "cce": cce, "colony": colony, "dir": direction.normalized(), "build_banners_used": {}, "dot_id": dot, "pending_observe": null, "collect_lock": null }
+	dot_data[dot] = { "age": 0, "cce": cce, "colony": colony, "dir": direction.normalized(), "build_banners_used": {}, "dot_id": dot, "pending_observe": null, "collect_lock": null, "facing": null }
 	known_colonies[colony] = true
 	colony_counts[colony] = colony_counts.get(colony, 0) + 1
 	_place_dot_on_sphere(dot, direction)
@@ -3005,29 +3101,20 @@ func _deep_copy_cce(source: Dictionary) -> Dictionary:
 # --- Soul specks ---
 
 func _create_speck(dir: Vector3) -> void:
-	var mesh = MeshInstance3D.new()
-	var box = BoxMesh.new()
-	box.size = Vector3(0.008, 0.003, 0.008) / WORLD_SCALE
-	mesh.mesh = box
-	var mat = StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.85, 0.2)
-	mat.emission_enabled = true
-	mat.emission = Color(1.0, 0.85, 0.2)
-	mat.emission_energy_multiplier = 1.2
-	mesh.material_override = mat
-	mesh.position = dir.normalized() * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
-	add_child(mesh)
 	var speck = _new_entity_id()
-	views[speck] = mesh
 	specks.append(speck)
-	# Index by the cell of the speck's ACTUAL position (what collision used to compare against),
-	# and remember it: specks spawn exactly on cell corners (_cell_to_dir), where recomputing the
-	# key can round into a neighbouring cell and strand a freed speck in the index.
-	var cell = _cell_key(mesh.position.normalized())
-	speck_data[speck] = { "dir": mesh.position.normalized(), "cell": cell }
+	# A speck sits at dot height over `dir`. Its record direction and index cell come from that
+	# lifted point and are computed ONCE and stored: specks spawn exactly on cell corners
+	# (_cell_to_dir), where recomputing the key can round into a neighbouring cell and strand a
+	# removed speck in the index.
+	var lifted = (dir.normalized() * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)).normalized()
+	var cell = _cell_key(lifted)
+	speck_data[speck] = { "dir": lifted, "cell": cell }
 	if not speck_cells.has(cell):
 		speck_cells[cell] = []
 	speck_cells[cell].append(speck)
+	_view_touch(speck, VIEW_PLACE | VIEW_COLOR)
+
 
 func _remove_speck(speck: int) -> void:
 	specks.erase(speck)
@@ -3037,8 +3124,7 @@ func _remove_speck(speck: int) -> void:
 		speck_cells[cell].erase(speck)
 		if speck_cells[cell].is_empty():
 			speck_cells.erase(cell)
-	views[speck].queue_free()
-	views.erase(speck)
+	_view_remove(speck)
 
 func _tick_specks() -> void:
 	for _i in range(SPECK_SPAWN_PER_TICK):
@@ -3052,49 +3138,28 @@ func _create_surface_mark(dir: Vector3, color: Color, intensity: float) -> void:
 	# Perf cap: skip when the field is saturated; TTL expiry (_tick_surface_marks) frees slots.
 	if surface_marks.size() >= MARK_MAX:
 		return
-	var mark = MeshInstance3D.new()
-	var quad = BoxMesh.new()
-	var s = lerp(MARK_SIZE_MIN, MARK_SIZE_MAX, intensity)
-	quad.size = Vector3(s, 0.001 / WORLD_SCALE, s)
-	mark.mesh = quad
-	var mat = StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.emission_enabled = true
-	mat.emission = color
-	mat.emission_energy_multiplier = 0.4
-	mark.material_override = mat
-	# Straddle the surface rather than float above it: centred exactly ON the sphere, so the
-	# tile is half embedded and sits 0.0005 proud — it reads as paint, not as a tile hovering
-	# over the ground. (It previously sat at +0.00375, over 3x its own 0.001 thickness above
-	# the surface.) Marks are the one thing that must be IN the sphere, not on top of it, so
-	# they deliberately do not use DOT_SURFACE_OFFSET the way dots and blocks do.
-	# Curvature is negligible at this size: a 0.014 tile's corners rise ~5e-5 off the tangent
-	# plane, a tenth of the protrusion, so the whole quad stays seated.
-	mark.position = dir.normalized() * SPHERE_RADIUS
-	# Orient the quad flush to the surface. Without this the box keeps the identity basis,
-	# so its 0.001 "thin" axis stays world-Y while the surface normal points elsewhere —
-	# at the equator (where colonies spawn) that is 90 degrees out, and the mark stands
-	# edge-on as a paper-thin fin instead of lying flat. Same basis construction as
-	# _create_block; y is the surface normal, x/z span the tangent plane.
-	var mark_basis = Basis()
-	mark_basis.y = dir.normalized()
-	mark_basis.x = mark_basis.y.cross(Vector3.FORWARD if abs(mark_basis.y.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT).normalized()
-	mark_basis.z = mark_basis.x.cross(mark_basis.y).normalized()
-	mark.transform.basis = mark_basis
-	add_child(mark)
-	var ttl = int(lerp(float(MARK_TTL_MIN), float(MARK_TTL_MAX), intensity))
-	surface_marks.append({ "node": mark, "ticks_remaining": ttl })
+	var mark = _new_entity_id()
+	mark_data[mark] = {
+		"dir": dir.normalized(),
+		"color": color,
+		"size": lerp(MARK_SIZE_MIN, MARK_SIZE_MAX, intensity),
+		"ticks_remaining": int(lerp(float(MARK_TTL_MIN), float(MARK_TTL_MAX), intensity)),
+	}
+	surface_marks.append(mark)
+	_view_touch(mark, VIEW_PLACE | VIEW_COLOR)
+
 
 func _tick_surface_marks() -> void:
 	var i = surface_marks.size() - 1
 	while i >= 0:
-		surface_marks[i]["ticks_remaining"] -= 1
-		if surface_marks[i]["ticks_remaining"] <= 0:
-			surface_marks[i]["node"].queue_free()
+		var mark = surface_marks[i]
+		mark_data[mark]["ticks_remaining"] -= 1
+		if mark_data[mark]["ticks_remaining"] <= 0:
+			mark_data.erase(mark)
 			surface_marks.remove_at(i)
+			_view_remove(mark)
 		i -= 1
 
-# --- Camera ---
 
 func _focus_on_colony():
 	var center = _compute_colony_center(LOCAL_COLONY)
@@ -3191,12 +3256,8 @@ func _place_dot_on_sphere(dot: int, direction: Vector3, check_foreign: bool = fa
 	var dir = direction.normalized()
 	if dot_data.has(dot):
 		dot_data[dot]["dir"] = dir
-	views[dot].position = dir * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
-	var new_basis = Basis()
-	new_basis.y = dir
-	new_basis.x = new_basis.y.cross(Vector3.FORWARD if abs(dir.dot(Vector3.FORWARD)) < 0.99 else Vector3.RIGHT).normalized()
-	new_basis.z = new_basis.x.cross(new_basis.y).normalized()
-	views[dot].transform.basis = new_basis
+		dot_data[dot]["facing"] = null  # a move resets the dot's heading
+	_view_touch(dot, VIEW_PLACE)
 	# Update spatial grid for the new position (only if dot is fully registered)
 	if dot_data.has(dot) and dot_cell.has(dot):
 		_grid_update_position(dot)

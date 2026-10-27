@@ -2424,12 +2424,12 @@ Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open aga
 
 ---
 
-## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale, separation stages 1–2; stage 3 uncommitted on top.)
+## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale, separation stages 1–3; stage 4 uncommitted on top.)
 
 Fresh session: read THIS entry, then the 2026-10-27 word-cloud entry and the 2026-10-23 entry above, `RECONCILIATION.md` (S.b update, CLIENT / UX), and the bible.
 
 ### Git
-PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–2 are committed + pushed; stage 3 is uncommitted on top.
+PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–3 are committed + pushed; stage 4 is uncommitted on top.
 
 ### Multiplayer decisions (Dustan) — RECONCILIATION S.b
 1. **Server-side authority** (bible §14). The server runs the whole simulation; clients render it and send chants. Bible §15.2's `/sync` (clients upload their own dots) is dropped: it contradicts §14, and offline colonies need a server simulation anyway.
@@ -2489,4 +2489,20 @@ Baseline for before/after telemetry comparison: the 50-colony run on the 447 gri
   - **Behaviour mix t30–45** within about 1 point on every verb (old → new): reproduce .219/.219, move .219/.210, observe .121/.125, gather .082/.091, build .078/.080, attack .056/.054, defend .055/.054.
   - **Growth** similar (live t30 4,653 / 4,015; blocks 1,059 / 1,079).
   - **Exercised:** combat (546 resolutions), walls and perches (51 wall banners, 29 extensions), and gathering (specks net +15/tick against 25 spawned, so about 10/tick collected; soul accrues).
-  - **Load at t96:** 22,179 dots + 12,690 blocks ≈ 35k individual nodes, which is why ticks crawl late in a run. Stage 5 (batched drawing) targets this. Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
+  - **Load at t96:** 22,179 dots + 12,690 blocks ≈ 35k individual nodes, which is why ticks crawl late in a run. Stage 5 (batched drawing) targets this.
+
+### Separation stage 3 — a view layer; the simulation never touches meshes
+- **Flags, not meshes.** Simulation code now only flags what changed: `_view_touch(id, VIEW_PLACE | VIEW_COLOR)` (spawned / moved / perched / turned / recoloured) and `_view_remove(id)`. **`_sync_views()`** runs once per frame at the end of `_process`: it frees removed meshes, builds missing ones (`_view_build` picks the mesh by kind: dot, block, wall, speck, mark), then applies placement (`_view_place`) and colour (`_view_color`). These flags are the diff a server would send to clients.
+- **Visual inputs moved into data:**
+  - dots: **`"facing"`** (set by `_face_dir`, cleared by any move, matching how a move used to reset the basis); perched height comes from `wall_perch`.
+  - walls: **`"threat_dir"`**.
+  - marks are entities: **`mark_data[id] = {dir, color, size, ticks_remaining}`**, and `surface_marks` holds ids.
+  - specks store the lifted direction they always used (identical float path).
+- **Colour is a pure function of data:** **`_dot_colors(id)` → [albedo, emission]** (the old `_update_dot_color` logic). `_update_dot_color` now just flags, so its ~10 call sites are unchanged. **mark_surface takes its colour from `_dot_colors`**, not by reading the maker's material — the last place the simulation read visual state.
+- Bases are factored into view helpers: `_surface_basis`, `_facing_basis`, `_wall_basis` (same maths as before).
+- **Audited:** outside the view section nothing creates, frees, moves or colours a mesh (only the word-cloud UI, the camera and the sun remain).
+- **Expected differences:** meshes now update once at the end of the frame, not mid-tick, which isn't visible because rendering happens after `_process`. A perched waller keeps its facing recomputed against the segment's direction (negligible). Marks now draw ids from the shared counter, so `dot_id`s jump further.
+- `validate_script` clean. **Verified by Dustan's run `1793122471`** (50 colonies, 61 ticks, "pretty decent run"): **no runtime errors**; all 50 alive at t61.
+  - Live / specks / marks track the earlier runs (t45 live 11,449 / 9,573 / **11,275**; specks 989 / 1,003 / **975**). Blending active (56,906 contacts, 413 border births by t61).
+  - Behaviour mix t30–45 within about 1.5 points of both earlier runs.
+  - **Blocks were about 25% lower (t45: 2,084 against 2,689 / 2,939). That's run variance, not stage 3:** this run's five builder colonies were half the usual size at t45 (239 dots against 459–521; build rolls 2,589 against about 5,000), while blocks per build roll (0.174) sits inside the earlier range (0.189–0.225). Combat and walls by t61 match the stages 1–2 run (70 / 62 resolutions; 6 / 9 wall banners). Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
