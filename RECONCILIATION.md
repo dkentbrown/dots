@@ -1,6 +1,6 @@
 # NOEMA — Bible ↔ Code Reconciliation
 
-**Status:** draft for review · created 2026-07-21 · restructured 2026-07-21 around the three-tier spine · updated 2026-07-24 (Tier 1 recipes; first canon call — S.c soul) · updated 2026-07-25 (T2.c RESOLVED — linear selection; T1.e canon call + shipped — Tier-1 move-mode collapse; three-tier build roadmap) · all merged to `main` via PR #1 (2026-07-26) · updated 2026-07-28 (S.c revised — soul becomes a standing level driving DILUTION; chant-draw retired; passive decay added; dilution re-enabled soul-modulated — branch `session/2026-07-28-soul-dilution`, unmerged) · updated 2026-10-23 (S.b chant engine = baked lexicon, multi-word chants compose, `build` chantable; S.a CCE blending BUILT — contact + border births; same branch, committed + pushed, unmerged) · author: Claude Code (planning+implementation layer)
+**Status:** draft for review · created 2026-07-21 · restructured 2026-07-21 around the three-tier spine · updated 2026-07-24 (Tier 1 recipes; first canon call — S.c soul) · updated 2026-07-25 (T2.c RESOLVED — linear selection; T1.e canon call + shipped — Tier-1 move-mode collapse; three-tier build roadmap) · all merged to `main` via PR #1 (2026-07-26) · updated 2026-07-28 (S.c revised — soul becomes a standing level driving DILUTION; chant-draw retired; passive decay added; dilution re-enabled soul-modulated — branch `session/2026-07-28-soul-dilution`, unmerged) · updated 2026-10-23 (S.b chant engine = baked lexicon, multi-word chants compose, `build` chantable; S.a CCE blending BUILT — contact + border births; same branch, committed + pushed, unmerged) · updated 2026-10-27 (new CLIENT / UX section: U.a portrait, U.b word-cloud chant; vocabulary expanded to 712 words / 63 meanings; same branch, pushed, unmerged) · author: Claude Code (planning+implementation layer)
 **Sources:** `Noema_Design_Bible_v0.4.docx` (design canon) vs. `main.gd` (current code) + `DEVNOTES.md` (tactical log).
 
 ## Why this document exists
@@ -227,6 +227,20 @@ Shipped values (all placeholders): gain 4.0, half 100, draw 0.25 → 0 soul = 1.
 
 ---
 
+# CLIENT / UX (the player-facing surface)
+
+### U.a — orientation: portrait ⚑ CANON CALL 2026-10-23
+**Bible §14:** "Godot 4 mobile client (landscape, iOS and Android)." **Decision (Dustan):** the game is **portrait**. Preview base viewport 390×844, `handheld/orientation = "portrait"`.
+`DECISION: CODE — portrait supersedes §14's landscape (v0.5).`
+
+### U.b — the chant: a word cloud, not a text box ⚑ CANON CALL 2026-10-27
+**Bible §4:** "A button opens a text input in the center of the screen. The player types a word or phrase." **§7:** the LLM interprets *any* language ("words, phrases, metaphors, poetry, prayers").
+**Decision (Dustan):** the chant is **composed from a drifting word cloud** at the bottom of the screen. You tap words into a chant line (double-tap = "very", swipe down = "never"), and the line casts 4 s after its last change. No keyboard, no visible text box. The cloud is also a **cultural mirror**: words lean toward your colony's culture (familiar), toward cultures you're touching (contact — blending made visible) and toward random novelty, which partly answers §16's "visual feedback for CCE without a UI readout".
+**What it gives up:** §7's free language. The vocabulary is the baked lexicon, 712 words / 63 meanings after the 2026-10-27 expansion (adding combination meanings such as guardian = defend + cohesion and lineage = reproduce + mark), chosen from rather than typed. This sits naturally with S.b's baked-lexicon call; free typing survives only in the debug dev bar. If a server LLM arrives later, its natural role becomes *growing the vocabulary* the cloud draws from, not parsing free text.
+`DECISION: CODE — word-cloud chant supersedes §4's text input and narrows §7 (v0.5). Built and committed 2026-10-27; Dustan's in-game look: fine.`
+
+---
+
 ## Bible's own open questions (§16) — still unresolved in the doc
 
 Carry these into the roadmap: CCE-blending proximity radius & rate · ~~resource system (does `gather` have a target?)~~ **— answered in code, see S.c; strike from v0.5** · visual feedback for CCE drift · win condition vs. pure sandbox · colony colour/identity · new-player starting buffer (**sharpened by S.c** — a soul multiplier widens the gap a newcomer must close) · affinity-dial implementation (see T1.d).
@@ -263,3 +277,5 @@ Carry these into the roadmap: CCE-blending proximity radius & rate · ~~resource
 | S.a | dilution + blending | **dilution re-enabled; blending built** | 2026-07-28: dilution ON, soul-modulated (via S.c). 2026-10-23: blending = contact + border births, untuned |
 | S.b | server / LLM / MP spine | **chant engine: baked lexicon** | 2026-10-23: no runtime LLM for now; server LLM + shared cache later for unmatched words; spine still deferred |
 | S.c | soul economy + chant potency | **CODE (revised 07-28)** | 07-24 first call; 07-28 revised — standing soul drives dilution, draw removed, decay added; branch unmerged, needs tuning |
+| U.a | orientation | **CODE — portrait** | 2026-10-23; supersedes §14 landscape |
+| U.b | chant input | **CODE — word cloud** | 2026-10-27; supersedes §4 text box, narrows §7 free language; vocabulary 712 words / 63 meanings |

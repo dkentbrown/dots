@@ -2335,7 +2335,7 @@ Added: `DILUTION_MIN`, `DILUTION_MAX`, `SOUL_DILUTION_HALF`, `SOUL_DECAY_RATE`. 
 
 ---
 
-## 2026-10-23 — CURRENT STATE. Chants compose (baked lexicon); CCE blending built. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED.)
+## 2026-10-23 — Chants compose (baked lexicon); CCE blending built; then portrait UI, space sky, sun. **Hydration entry — SUPERSEDED by 2026-10-27 below.** (Everything here is committed + pushed, through `e490757`.)
 
 Fresh session: read THIS entry + `RECONCILIATION.md` (S.a, S.b, T1.c) + `Noema_Design_Bible_v0.4.docx` before design work.
 
@@ -2390,3 +2390,34 @@ Branch **`session/2026-07-28-soul-dilution`**, pushed to `origin` (Dustan's go-a
 2b. Blending and soul-dilution values are still placeholders, but the 10-23 run gives no reason to move them yet.
 3. Grow the lexicon from `unmatched`. `frequency`/`affinity` dials are still unbuilt, so words like `rapid`, `swarm`-as-frequency and `toward X` have no direct target.
 4. Still open from before: mark → motif (T1.e step 3); combat-defense balance.
+
+---
+
+## 2026-10-27 — CURRENT STATE. Word cloud replaces the chant box. **Hydration entry — START HERE.** (All committed + pushed, UNMERGED.)
+
+Fresh session: read THIS entry, then the 2026-10-23 entry above (chants, blending, playtest findings, UI/sky/sun), then `RECONCILIATION.md` (new CLIENT / UX section) and `Noema_Design_Bible_v0.4.docx`.
+
+### Git
+Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open against `main`. `e490757` (portrait UI pass, space sky, orbiting sun, night lighting), then the word cloud + vocabulary expansion below in the commit after it — all pushed. Dustan has looked at the cloud in-game ("looks fine"); no telemetry run read yet.
+
+### Canon calls (Dustan) — see RECONCILIATION U.a / U.b
+- **Portrait**, not landscape (overrides bible §14).
+- **The chant is composed from a drifting word cloud, not typed** (amends bible §4 "a button opens a text input" and §7's free-language premise). Typing survives only in the debug dev bar.
+
+### Word cloud — agreed spec, as built
+- `word_cloud.gd` (a Control that `main.gd` creates in `_ready` and adds under `UI`): 3 rows drifting sideways at 14 / −20 / 17 px/s in a band across the bottom (~166 px tall plus a 28 px home-indicator margin), fading at the edges. Rows pause while a finger is down; a touch that starts on the band doesn't orbit the globe (`_input` checks `word_cloud.get_global_rect()`).
+- All words share one size and colour.
+- **Gestures:** tap → the word floats up into the chant line; double-tap (second tap within 0.3 s near the first) → the word just added becomes "very <word>"; swipe down on a word → "never <word>"; tap a word in the line → it goes back. "never"/"very" never appear in the cloud themselves.
+- **Chant line:** up to 5 words in tap order, showing exactly what will be cast. It brightens from 55% to full over **4 s after its last change** (paused while a finger is down), then casts: the words fly to your colony's screen position and shrink and fade, or just rise and fade if your colony is on the far side. The cast text goes through `_process_input`, so `chant_parsed` / `chant_applied` telemetry is unchanged. The old text echo is gone.
+- **Supply (`_pick_cloud_word`):** words are grouped into **meanings** by identical recipe (`_build_chant_meanings`): 712 words → 63 meanings after the vocabulary expansion below (was 453 → 33). One meaning on screen at a time; synonyms rotate through a shuffled order. Each new word's source: 50% FAMILIAR (meaning weighted by affinity to LOCAL_COLONY's mean CCE), 20% CONTACT (a colony that blended with yours within 30 ticks, via `_local_contacts` recorded in `_tick_blending`), the rest NOVEL (uniform). If no contact or no affinity, it falls back to uniform. Constants: `CLOUD_MIX_FAMILIAR`, `CLOUD_MIX_CONTACT`, `CLOUD_CONTACT_MEMORY_TICKS` (placeholders).
+- **Vocabulary expansion (Dustan: "flesh out our words"):** 30 new **combination meanings** in `CHANT_LEXICON` (marked "combinations (2026-10-27)"), each blending two behaviours on the fixed schema, 6–11 words each. E.g. pathfinder (move + observe + far), procession (move + cohesion), stillness (move DOWN: dwell/linger/stay), council (cohesion + observe), empire (dispersion + build), stealth (attack + observe, quiet), frenzy (attack ×1.5, defend DOWN), duel/honor (attack + defend), warpaint/sigil (mark + attack), alliance (cohesion, attack DOWN), watchtower (defend + observe), patrol, guardian (defend + cohesion), resilience, ornament (build + mark — T1.e's ornament motif), village, megalith, delve, farm, trade, hunger, lineage/ancestors (reproduce + mark), vigor, dream/oracle (observe + spiral), survey, beacon, lament, chant/hymn/prayer (mark + cohesion), cycle/tide/rebirth (spiral + reproduce), storm. Thin meanings padded (wanderlust, love, plus new range −0.1 and intensity −0.1 groups). Now 63 meanings; all have ≥5 words except the lone hand-tuned "spiral". No duplicates or function-word collisions. Side effect for typed chants: "gathering"/"meeting" now mean council, not gather/confront.
+- **Removed:** `ChantButton` and `ChantModal` (+ children) from `main.tscn`; the chant box code, Enter-to-open / Esc-to-close, the modal input guard, and the chant echo from `main.gd`. `ui_theme.tres` still carries now-unused Button/Panel styles (harmless).
+
+### Verify
+`validate_script` clean on `main.gd` and `word_cloud.gd`; the scene reloads in the editor with only DevBar/HUD/ZoomSlider under `UI`; meaning grouping checked against the real word tables in the editor. **Not run in Godot by Claude** — the cloud only exists at runtime. Check: drift and edge fade; tap / double-tap / swipe-down / tap-to-return; the 4 s brighten-and-cast; the flight to your colony; no globe rotation when dragging on the band. Desktop: left click = tap, quick double click = very, left-drag down = never.
+
+### Open / next
+1. Playtest the cloud in-game; tune speeds, spacing, timings (all consts at the top of `word_cloud.gd`).
+2. The FAMILIAR/CONTACT mix only shows up over minutes. Watch whether the cloud visibly leans toward your culture and your neighbours'.
+3. Still open from before: the test-field autochant lean question (10-23 Open/next #2); mark → motif; combat-defense balance.
+4. Minor: `_interpret_chant`'s local `scale` shadows `Node3D.scale` (an editor warning); a one-word rename, offered, not done.

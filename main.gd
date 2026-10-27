@@ -433,7 +433,7 @@ const CHANT_LEXICON = [
 	# --- move (wander) ---
 	[["go", "walk", "travel", "journey", "drift", "venture", "migrate", "stray", "rove", "trek", "voyage", "move", "run", "nomad", "nomadic", "pilgrim", "pilgrimage", "road", "path", "trail", "onward"],
 		{ "motion": { "move": CHANT_WEIGHT }, "dials": { "range": 0.05 } }],
-	[["wanderlust", "odyssey", "exodus"],
+	[["wanderlust", "odyssey", "exodus", "restless", "unbound", "untethered"],
 		{ "motion": { "move": CHANT_WEIGHT * 1.5 }, "dials": { "range": 0.1 } }],
 	[["seek", "search", "quest", "discover", "discovery", "curious", "curiosity"],
 		{ "motion": { "move": CHANT_WEIGHT * 0.5 }, "action": { "observe": CHANT_WEIGHT * 0.5 } }],
@@ -487,7 +487,7 @@ const CHANT_LEXICON = [
 		{ "action": { "reproduce": CHANT_WEIGHT } }],
 	[["swarm", "multitude", "teeming", "legion", "horde"],
 		{ "action": { "reproduce": CHANT_WEIGHT * 0.5 }, "modes": { "cohesion": CHANT_WEIGHT * 0.5 } }],
-	[["love", "lover", "beloved"],
+	[["love", "lover", "beloved", "adore", "cherish", "devotion", "passion", "desire"],
 		{ "action": { "reproduce": CHANT_WEIGHT }, "modes": { "cohesion": CHANT_WEIGHT * 0.5 } }],
 	# --- observe ---
 	[["look", "listen", "notice", "scout", "witness", "gaze", "wonder", "learn", "know", "knowledge", "wisdom", "wise", "think", "eye", "sense", "perceive", "vigil", "watchful", "aware", "awareness", "study", "understand", "alert", "vigilant"],
@@ -495,6 +495,73 @@ const CHANT_LEXICON = [
 	# --- mark_surface ---
 	[["draw", "write", "inscribe", "etch", "sign", "symbol", "glyph", "rune", "art", "story", "stories", "remember", "memory", "memories", "legacy", "track", "footprint", "ink", "dye", "decorate", "adorn", "beauty", "beautiful", "color", "colour", "song", "sing", "myth"],
 		{ "action": { "mark_surface": CHANT_WEIGHT }, "dials": { "intensity": 0.05 } }],
+	# --- combinations (2026-10-27): meanings that blend two behaviours, so the word cloud has
+	# more distinct things to say than one per verb. Still only the fixed schema (§7). ---
+	[["pathfinder", "trailblazer", "ranger", "wayfarer", "outrider", "voyager"],
+		{ "motion": { "move": CHANT_WEIGHT }, "action": { "observe": CHANT_WEIGHT * 0.5 }, "dials": { "range": 0.1 } }],
+	[["procession", "parade", "caravan", "convoy", "cavalcade", "entourage"],
+		{ "motion": { "move": CHANT_WEIGHT * 0.5 }, "modes": { "cohesion": CHANT_WEIGHT * 0.5 } }],
+	# stillness pushes move DOWN — settling, the opposite of wanderlust
+	[["stillness", "linger", "dwell", "abide", "remain", "stay", "rooted"],
+		{ "motion": { "move": -CHANT_WEIGHT * 0.5 }, "dials": { "intensity": -0.05 } }],
+	[["council", "assembly", "congregation", "conclave", "gathering", "meeting"],
+		{ "modes": { "cohesion": CHANT_WEIGHT }, "action": { "observe": CHANT_WEIGHT * 0.5 } }],
+	[["empire", "kingdom", "realm", "dominion", "territory", "province", "colony", "colonies"],
+		{ "modes": { "dispersion": CHANT_WEIGHT * 0.5 }, "action": { "build": CHANT_WEIGHT * 0.5 }, "dials": { "range": 0.05 } }],
+	[["lurk", "prowl", "creep", "ambush", "shadow", "stealth", "sneak", "skulk"],
+		{ "action": { "attack": CHANT_WEIGHT * 0.5, "observe": CHANT_WEIGHT * 0.5 }, "dials": { "intensity": -0.05 } }],
+	# frenzy trades defence for attack — reckless
+	[["frenzy", "berserk", "rampage", "carnage", "havoc", "riot", "mayhem", "bloodlust"],
+		{ "action": { "attack": CHANT_WEIGHT * 1.5, "defend": -CHANT_WEIGHT * 0.5 }, "dials": { "intensity": 0.1 } }],
+	[["duel", "champion", "valor", "valour", "honor", "honour", "glory", "contest"],
+		{ "action": { "attack": CHANT_WEIGHT * 0.5, "defend": CHANT_WEIGHT * 0.5 }, "dials": { "range": -0.05 } }],
+	[["scar", "brand", "tattoo", "warpaint", "banner", "sigil", "flag", "emblem"],
+		{ "action": { "mark_surface": CHANT_WEIGHT * 0.5, "attack": CHANT_WEIGHT * 0.5 }, "dials": { "intensity": 0.05 } }],
+	[["ally", "allies", "alliance", "friend", "friendship", "trust", "welcome", "truce", "accord", "pact"],
+		{ "modes": { "cohesion": CHANT_WEIGHT * 0.5 }, "action": { "attack": -CHANT_WEIGHT * 0.5 } }],
+	[["watchtower", "lookout", "sentry", "warden", "keeper", "watchman", "picket"],
+		{ "action": { "defend": CHANT_WEIGHT * 0.5, "observe": CHANT_WEIGHT } }],
+	[["patrol", "outpost", "perimeter", "circuit", "sweep", "garrison"],
+		{ "motion": { "move": CHANT_WEIGHT * 0.5 }, "action": { "defend": CHANT_WEIGHT * 0.5 }, "dials": { "range": 0.05 } }],
+	[["guardian", "protector", "shepherd", "phalanx", "shieldwall", "custodian"],
+		{ "action": { "defend": CHANT_WEIGHT }, "modes": { "cohesion": CHANT_WEIGHT * 0.5 } }],
+	[["resilience", "resilient", "hardy", "sturdy", "tough", "persist", "perseverance"],
+		{ "action": { "defend": CHANT_WEIGHT * 0.5, "reproduce": CHANT_WEIGHT * 0.5 } }],
+	# ornament — build + mark, the decorated-monument half of T1.e's mark motif
+	[["ornament", "mosaic", "sculpt", "sculpture", "fresco", "frieze", "filigree", "tapestry", "artisan"],
+		{ "action": { "build": CHANT_WEIGHT * 0.5, "mark_surface": CHANT_WEIGHT * 0.5 } }],
+	[["village", "town", "hamlet", "homestead", "dwelling", "house", "hut", "hive", "settlement"],
+		{ "action": { "build": CHANT_WEIGHT * 0.5 }, "modes": { "cohesion": CHANT_WEIGHT * 0.5 }, "dials": { "range": -0.05 } }],
+	[["obelisk", "ziggurat", "colossus", "cairn", "henge", "megalith", "monolith"],
+		{ "action": { "build": CHANT_WEIGHT }, "dials": { "range": 0.05, "intensity": 0.05 } }],
+	[["delve", "dig", "burrow", "tunnel", "cave", "cavern", "underground", "quarry"],
+		{ "action": { "build": CHANT_WEIGHT * 0.5, "gather": CHANT_WEIGHT * 0.5 }, "dials": { "range": -0.1 } }],
+	[["farm", "cultivate", "tend", "till", "plough", "plow", "orchard", "garden", "crop", "sow"],
+		{ "action": { "gather": CHANT_WEIGHT * 0.5, "reproduce": CHANT_WEIGHT * 0.5 } }],
+	[["trade", "barter", "market", "merchant", "exchange", "bargain", "commerce", "coin"],
+		{ "motion": { "move": CHANT_WEIGHT * 0.5 }, "action": { "gather": CHANT_WEIGHT * 0.5 }, "dials": { "range": 0.05 } }],
+	[["hunger", "hungry", "famine", "thirst", "craving", "starve"],
+		{ "action": { "gather": CHANT_WEIGHT, "observe": CHANT_WEIGHT * 0.5 }, "dials": { "intensity": 0.05 } }],
+	# lineage — reproduce + mark: memory carried down the generations (§9's whole subject)
+	[["ancestor", "ancestors", "lineage", "heritage", "bloodline", "dynasty", "heir", "inheritance", "tradition", "elder", "elders"],
+		{ "action": { "reproduce": CHANT_WEIGHT * 0.5, "mark_surface": CHANT_WEIGHT * 0.5 } }],
+	# for reproduce, intensity is the vigour of offspring (§6)
+	[["vigor", "vigour", "youth", "young", "vital", "vitality", "spring", "lush", "verdant", "ripe"],
+		{ "action": { "reproduce": CHANT_WEIGHT }, "dials": { "intensity": 0.1 } }],
+	[["dream", "vision", "trance", "prophecy", "oracle", "omen", "seer", "mystic", "reverie"],
+		{ "action": { "observe": CHANT_WEIGHT * 0.5 }, "motion": { "spiral_path": CHANT_WEIGHT * 0.5 }, "dials": { "range": 0.05 } }],
+	[["survey", "chart", "map", "compass", "navigate", "navigator", "telescope", "horizon"],
+		{ "action": { "observe": CHANT_WEIGHT }, "dials": { "range": 0.1 } }],
+	[["beacon", "torch", "lantern", "glow", "shine", "radiant", "signal", "flare", "light"],
+		{ "action": { "mark_surface": CHANT_WEIGHT * 0.5, "observe": CHANT_WEIGHT * 0.5 }, "dials": { "range": 0.05 } }],
+	[["lament", "grief", "mourning", "sorrow", "elegy", "tears", "weep", "requiem"],
+		{ "action": { "mark_surface": CHANT_WEIGHT * 0.5, "observe": CHANT_WEIGHT * 0.5 }, "dials": { "intensity": -0.05 } }],
+	[["chant", "hymn", "anthem", "chorus", "choir", "voice", "psalm", "litany", "mantra", "prayer"],
+		{ "action": { "mark_surface": CHANT_WEIGHT * 0.5 }, "modes": { "cohesion": CHANT_WEIGHT * 0.5 } }],
+	[["cycle", "season", "tide", "rhythm", "renewal", "rebirth", "eternal", "eternity", "return"],
+		{ "motion": { "spiral_path": CHANT_WEIGHT * 0.5 }, "action": { "reproduce": CHANT_WEIGHT * 0.5 } }],
+	[["storm", "tempest", "hurricane", "maelstrom", "whirlwind", "gale", "typhoon"],
+		{ "motion": { "spiral_path": CHANT_WEIGHT }, "modes": { "dispersion": CHANT_WEIGHT * 0.5 }, "dials": { "intensity": 0.1 } }],
 	# --- dial-only modifiers ---
 	[["vast", "beyond", "endless", "boundless", "infinite", "everywhere", "faraway", "remote"],
 		{ "dials": { "range": 0.1 } }],
@@ -506,8 +573,13 @@ const CHANT_LEXICON = [
 		{ "dials": { "intensity": 0.1 } }],
 	[["deep", "hard", "bold", "brave", "courage", "proud", "loud", "power", "strength"],
 		{ "dials": { "intensity": 0.05 } }],
-	[["quiet", "calm", "silent", "silence", "tender", "mild", "meek", "humble", "serene", "faint", "weak", "whisper", "gently"],
+	[["quiet", "calm", "silent", "silence", "tender", "mild", "meek", "humble", "serene", "faint", "weak", "whisper", "gently", "lightly"],
 		{ "dials": { "intensity": -0.05 } }],
+	# the strong ends of range and intensity, joining CHANT_RECIPES' close/near/tight and gentle/soft/slow
+	[["intimate", "cramped", "adjacent", "nearby", "hemmed"],
+		{ "dials": { "range": -0.1 } }],
+	[["hushed", "muted", "feeble", "frail", "soothing", "lull"],
+		{ "dials": { "intensity": -0.1 } }],
 ]
 # Function words. A negator flips the sign of the NEXT known word ('never fight' lowers attack;
 # negators toggle, so 'never stop fighting' raises it). An intensifier scales the next known
@@ -522,6 +594,15 @@ const CHANT_INTENSIFY = 1.5
 # under these, so one-word chants apply exactly as before. PLACEHOLDER values.
 const CHANT_MAX_WEIGHT = CHANT_WEIGHT * 2.0
 const CHANT_MAX_DIAL = 0.15
+# Word cloud (word_cloud.gd), the player's chant input. Each new word comes from one of three
+# sources: FAMILIAR (meanings your colony already leans toward), CONTACT (meanings a colony that
+# touched yours within CLOUD_CONTACT_MEMORY_TICKS leans toward — blending made visible) or NOVEL
+# (uniform, so a culture can always turn). Whatever the first two don't take is novel. A
+# "meaning" is a set of words with identical recipes (see _build_chant_meanings). PLACEHOLDERS.
+const CLOUD_MIX_FAMILIAR = 0.5
+const CLOUD_MIX_CONTACT = 0.2
+const CLOUD_CONTACT_MEMORY_TICKS = 30
+const WordCloud = preload("res://word_cloud.gd")
 
 var dots = []
 var dot_data = {}
@@ -540,6 +621,15 @@ var _move_mode_counts = {}
 var _blend_counts = {}
 # word -> recipe fragment, built once in _ready from CHANT_LEXICON + CHANT_RECIPES.
 var _chant_lexicon = {}
+# Word-cloud meanings, grouped from _chant_lexicon: [{ "words": [...], "fragment": {...}, "next": int }].
+# "next" rotates through the synonyms so the same word doesn't keep coming back.
+var _chant_meanings = []
+# colony -> last tick one of its dots was in blending contact with a LOCAL_COLONY dot.
+var _local_contacts = {}
+# colony -> mean CCE of its living dots, valid for _profile_cache_tick only (_colony_profile).
+var _profile_cache = {}
+var _profile_cache_tick = -1
+var word_cloud = null
 # Live-dot record (see _create_dot):
 # dot_data[dot] = {
 #   "age": int,                 # ticks lived, dies at DOT_LIFETIME
@@ -610,26 +700,14 @@ const COLONY0_CCE = {
 
 @onready var camera = $Camera3D
 @onready var sun = $DirectionalLight3D
-@onready var chant_button = $UI/ChantButton
-@onready var chant_modal = $UI/ChantModal
-@onready var chant_box = $UI/ChantModal/VBox
-@onready var chant_input = $UI/ChantModal/VBox/ChantInput
-@onready var confirm_button = $UI/ChantModal/VBox/ButtonRow/ConfirmButton
-@onready var cancel_button = $UI/ChantModal/VBox/ButtonRow/CancelButton
 @onready var dev_bar = $UI/DevBar
 @onready var hud = $UI/HUD
 @onready var zoom_slider = $UI/ZoomSlider
 
 # Debug overlay: the stats HUD, dev chant bar and zoom slider. Hidden by default so the
-# player-facing UI is just the chant (bible §4); backtick (`) toggles it at runtime.
+# player-facing UI is just the word cloud (bible §4); backtick (`) toggles it at runtime.
 const DEBUG_UI_DEFAULT = false
 var _debug_ui = DEBUG_UI_DEFAULT
-# Brief fading echo of the player's chant above the chant button — confirms it was heard
-# without revealing how it was interpreted.
-const CHANT_ECHO_HOLD = 1.2
-const CHANT_ECHO_FADE = 1.2
-var _chant_echo: Label
-var _chant_echo_tween: Tween
 
 var zoom_target = 3.0
 var zoom_distance = 3.0
@@ -660,6 +738,7 @@ func _ready():
 	# Telemetry is persistent (not wiped); a run_start record segments accumulated runs.
 	_telemetry({ "type": "run_start", "run_id": int(Time.get_unix_time_from_system()), "grid_res": GRID_RES })
 	_build_chant_lexicon()
+	_build_chant_meanings()
 	if TEST_FIELD:
 		_spawn_test_field()
 	else:
@@ -669,72 +748,22 @@ func _ready():
 		_spawn_enemy_colony()
 	_update_camera()
 	_update_hud()
-	chant_button.pressed.connect(_open_chant)
-	confirm_button.pressed.connect(_confirm_chant)
-	cancel_button.pressed.connect(_close_chant)
-	chant_input.text_submitted.connect(_on_chant_submitted)
 	dev_bar.placeholder_text = "dev chant..."
 	dev_bar.text_submitted.connect(_on_dev_chant)
 	zoom_slider.value = zoom_target
 	zoom_slider.value_changed.connect(_on_zoom_slider_changed)
-	chant_modal.gui_input.connect(_on_chant_backdrop_input)
-	_build_chant_echo()
 	_set_debug_ui(_debug_ui)
+	word_cloud = WordCloud.new()
+	word_cloud.pick_word = _pick_cloud_word
+	word_cloud.cast_target = _colony_screen_point
+	word_cloud.chant_cast.connect(_process_input)
+	$UI.add_child(word_cloud)
 
 func _set_debug_ui(on: bool) -> void:
 	_debug_ui = on
 	hud.visible = on
 	dev_bar.visible = on
 	zoom_slider.visible = on
-
-func _build_chant_echo() -> void:
-	_chant_echo = Label.new()
-	_chant_echo.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_chant_echo.anchor_left = 0.0
-	_chant_echo.anchor_right = 1.0
-	_chant_echo.anchor_top = 1.0
-	_chant_echo.anchor_bottom = 1.0
-	_chant_echo.offset_top = -120.0
-	_chant_echo.offset_bottom = -90.0
-	_chant_echo.add_theme_font_size_override("font_size", 18)
-	_chant_echo.modulate.a = 0.0
-	$UI.add_child(_chant_echo)
-
-func _echo_chant(text: String) -> void:
-	if _chant_echo_tween:
-		_chant_echo_tween.kill()
-	_chant_echo.text = text
-	_chant_echo.modulate.a = 0.0
-	_chant_echo_tween = create_tween()
-	_chant_echo_tween.tween_property(_chant_echo, "modulate:a", 1.0, 0.25)
-	_chant_echo_tween.tween_interval(CHANT_ECHO_HOLD)
-	_chant_echo_tween.tween_property(_chant_echo, "modulate:a", 0.0, CHANT_ECHO_FADE)
-
-func _open_chant():
-	chant_modal.visible = true
-	chant_button.visible = false
-	chant_input.clear()
-	chant_input.grab_focus()
-
-func _close_chant():
-	chant_modal.visible = false
-	chant_button.visible = true
-	chant_input.clear()
-
-func _on_chant_backdrop_input(event: InputEvent) -> void:
-	# A tap or click on the dimmed backdrop, outside the chant box, dismisses it. The modal is
-	# full-screen at the canvas origin, so the event's local position is also its global one.
-	var pressed = (event is InputEventMouseButton or event is InputEventScreenTouch) and event.pressed
-	if pressed and not chant_box.get_global_rect().has_point(event.position):
-		_close_chant()
-
-func _confirm_chant():
-	_process_input(chant_input.text)
-	_close_chant()
-
-func _on_chant_submitted(text: String):
-	_process_input(text)
-	_close_chant()
 
 func _on_dev_chant(text: String):
 	_process_input(text)
@@ -931,6 +960,11 @@ func _tick_blending() -> void:
 						var cb = dot_data[b]["colony"]
 						if ca == cb:
 							continue
+						# Remembered for the word cloud's CONTACT words.
+						if ca == LOCAL_COLONY:
+							_local_contacts[cb] = _tick_num
+						elif cb == LOCAL_COLONY:
+							_local_contacts[ca] = _tick_num
 						_blend_pair(dot_data[a]["cce"], dot_data[b]["cce"], BLEND_RATE)
 						touched[a] = true
 						touched[b] = true
@@ -1076,8 +1110,6 @@ func _update_hud():
 # --- Chant input ---
 
 func _process_input(text: String):
-	if text.strip_edges() != "":
-		_echo_chant(text.strip_edges())
 	if USE_SERVER:
 		push_warning("USE_SERVER enabled but server is not implemented")
 		_send_chant_to_server(text)
@@ -1170,6 +1202,121 @@ func _interpret_chant(text: String) -> Dictionary:
 		for key in recipe[layer]:
 			recipe[layer][key] = clamp(recipe[layer][key], -cap, cap)
 	return { "recipe": recipe, "matched": matched, "unmatched": unmatched }
+
+# --- Word cloud supply ---
+
+func _build_chant_meanings() -> void:
+	# Group every lexicon word by its recipe: words with identical recipes are one meaning, so
+	# the cloud can show one at a time and rotate synonyms. Runs after _build_chant_lexicon.
+	var index = {}
+	for word in _chant_lexicon:
+		var frag = _chant_lexicon[word]
+		var key = JSON.stringify(frag, "", true)
+		if not index.has(key):
+			index[key] = _chant_meanings.size()
+			_chant_meanings.append({ "words": [], "fragment": frag, "next": 0 })
+		_chant_meanings[index[key]]["words"].append(word)
+	for m in _chant_meanings:
+		m["words"].shuffle()
+
+func _colony_profile(colony: int) -> Dictionary:
+	# Mean CCE (verbs, modes, dials) over a colony's living dots, cached for the current tick.
+	if _profile_cache_tick != _tick_num:
+		_profile_cache.clear()
+		_profile_cache_tick = _tick_num
+	if _profile_cache.has(colony):
+		return _profile_cache[colony]
+	var sum = {}
+	var count = 0
+	for dot in dots:
+		var d = dot_data[dot]
+		if d.get("is_block", false) or d["colony"] != colony:
+			continue
+		for layer in CCE_BLEND_LAYERS:
+			if not d["cce"].has(layer):
+				continue
+			if not sum.has(layer):
+				sum[layer] = {}
+			for k in d["cce"][layer]:
+				sum[layer][k] = sum[layer].get(k, 0.0) + d["cce"][layer][k]
+		count += 1
+	if count > 0:
+		for layer in sum:
+			for k in sum[layer]:
+				sum[layer][k] /= count
+	_profile_cache[colony] = sum
+	return sum
+
+func _meaning_affinity(frag: Dictionary, profile: Dictionary) -> float:
+	# How strongly a culture already leans the way this meaning pushes: its positive verb/mode
+	# weights against the culture's, plus its dial shifts against the culture's offset from
+	# neutral in the same direction.
+	var a = 0.0
+	for layer in ["motion", "action", "modes"]:
+		if frag.has(layer) and profile.has(layer):
+			for k in frag[layer]:
+				a += max(frag[layer][k], 0.0) * profile[layer].get(k, 0.0)
+	if frag.has("dials") and profile.has("dials"):
+		for k in frag["dials"]:
+			var base = NEUTRAL_CCE["dials"].get(k, 0.0)
+			a += max(0.0, frag["dials"][k] * (profile["dials"].get(k, base) - base))
+	return a
+
+func _current_contacts() -> Array:
+	var out = []
+	for c in _local_contacts:
+		if _tick_num - _local_contacts[c] <= CLOUD_CONTACT_MEMORY_TICKS and colony_counts.get(c, 0) > 0:
+			out.append(c)
+	return out
+
+func _sample_meaning(profile: Dictionary, excluded: Dictionary) -> int:
+	# Weighted by affinity to `profile`; uniform when the profile is empty or nothing matches.
+	var weights = []
+	var total = 0.0
+	for i in range(_chant_meanings.size()):
+		var w = 0.0
+		if not excluded.has(i):
+			w = 1.0 if profile.is_empty() else _meaning_affinity(_chant_meanings[i]["fragment"], profile)
+		weights.append(w)
+		total += w
+	if total <= 0.0:
+		if profile.is_empty():
+			return -1
+		return _sample_meaning({}, excluded)
+	var roll = randf() * total
+	for i in range(weights.size()):
+		roll -= weights[i]
+		if roll <= 0.0 and weights[i] > 0.0:
+			return i
+	return weights.size() - 1
+
+func _pick_cloud_word(excluded: Dictionary) -> Dictionary:
+	# word_cloud.gd's word supply: { "word", "meaning" }, or {} when every meaning is on screen.
+	var profile = {}
+	var roll = randf()
+	if roll < CLOUD_MIX_FAMILIAR:
+		profile = _colony_profile(LOCAL_COLONY)
+	elif roll < CLOUD_MIX_FAMILIAR + CLOUD_MIX_CONTACT:
+		var contacts = _current_contacts()
+		if not contacts.is_empty():
+			profile = _colony_profile(contacts.pick_random())
+	var i = _sample_meaning(profile, excluded)
+	if i < 0:
+		return {}
+	var m = _chant_meanings[i]
+	var word = m["words"][m["next"] % m["words"].size()]
+	m["next"] += 1
+	return { "word": word, "meaning": i }
+
+func _colony_screen_point():
+	# Where a cast chant flies: your colony's centre on screen, or null when it's on the far side
+	# of the globe (or gone), in which case the words just rise and fade.
+	if colony_counts.get(LOCAL_COLONY, 0) <= 0 or not _cached_colony_centers.has(LOCAL_COLONY):
+		return null
+	var p = _cached_colony_centers[LOCAL_COLONY] * SPHERE_RADIUS
+	if p.dot(camera.global_position) <= SPHERE_RADIUS * SPHERE_RADIUS:
+		return null
+	return camera.unproject_position(p)
 
 # --- Per-dot CCE tick ---
 
@@ -2876,20 +3023,6 @@ func _input(event):
 			_set_debug_ui(not _debug_ui)
 			get_viewport().set_input_as_handled()
 			return
-		if event.keycode == KEY_ESCAPE and chant_modal.visible:
-			_close_chant()
-			get_viewport().set_input_as_handled()
-			return
-		# Enter opens the chant on desktop. Marked handled so the same keypress doesn't reach
-		# the freshly focused input and submit it empty.
-		if (event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER) and not chant_modal.visible and not typing:
-			_open_chant()
-			get_viewport().set_input_as_handled()
-			return
-	# While the chant is open, the world behind it doesn't orbit or zoom. Releases still pass
-	# through so a drag or touch that began before it opened can't get stuck.
-	if chant_modal.visible and (event is InputEventMouseMotion or event is InputEventScreenDrag or (event is InputEventMouseButton and event.pressed)):
-		return
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_RIGHT:
 			is_orbiting = event.pressed
@@ -2905,7 +3038,8 @@ func _input(event):
 	if event is InputEventScreenTouch:
 		if event.pressed:
 			touch_positions[event.index] = event.position
-			if touch_positions.size() == 1:
+			# A finger that lands on the word cloud is choosing words, not rotating the globe.
+			if touch_positions.size() == 1 and not (word_cloud and word_cloud.get_global_rect().has_point(event.position)):
 				single_touch_active = true
 				single_touch_index = event.index
 		else:
