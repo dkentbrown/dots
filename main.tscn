@@ -1,6 +1,7 @@
 [gd_scene format=3 uid="uid://3gh3u2pg5q47"]
 
 [ext_resource type="Script" uid="uid://cvuyqj85a0mmk" path="res://main.gd" id="1_ig7tw"]
+[ext_resource type="Shader" path="res://space_sky.gdshader" id="2_space"]
 
 [sub_resource type="SphereMesh" id="SphereMesh_0xm2m"]
 radius = 1.0
@@ -13,11 +14,19 @@ roughness = 0.8
 [sub_resource type="SphereShape3D" id="SphereShape3D_ig7tw"]
 radius = 1.0
 
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_space"]
+shader = ExtResource("2_space")
+
+[sub_resource type="Sky" id="Sky_space"]
+sky_material = SubResource("ShaderMaterial_space")
+process_mode = 3
+
 [sub_resource type="Environment" id="Environment_ig7tw"]
 background_mode = 2
+sky = SubResource("Sky_space")
 ambient_light_source = 2
 ambient_light_color = Color(1, 1, 1, 1)
-ambient_light_energy = 0.85
+ambient_light_energy = 0.06
 
 [node name="Main" type="Node3D" unique_id=363429811]
 script = ExtResource("1_ig7tw")
@@ -31,6 +40,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 3)
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=418417863]
 transform = Transform3D(0.70710677, -0.49999997, 0.49999997, 0, 0.70710677, 0.70710677, -0.70710677, -0.49999997, 0.49999997, 0, 0, 0)
+light_energy = 1.8
 
 [node name="SphereBody" type="StaticBody3D" parent="." unique_id=1209738535]
 
@@ -42,80 +52,35 @@ environment = SubResource("Environment_ig7tw")
 
 [node name="UI" type="CanvasLayer" parent="." unique_id=946026932]
 
-[node name="ChantButton" type="Button" parent="UI" unique_id=236358772]
-anchors_preset = 7
-anchor_left = 0.5
-anchor_top = 1.0
-anchor_right = 0.5
-anchor_bottom = 1.0
-offset_left = -60.0
-offset_top = -80.0
-offset_right = 60.0
-offset_bottom = -20.0
-text = "Chant"
-
-[node name="ChantModal" type="Panel" parent="UI" unique_id=2003868827]
-visible = false
-anchors_preset = -1
-anchor_left = 0.25
-anchor_top = 0.35
-anchor_right = 0.75
-anchor_bottom = 0.65
-
-[node name="VBox" type="VBoxContainer" parent="UI/ChantModal" unique_id=1343963444]
-layout_mode = 0
-anchor_right = 1.0
-anchor_bottom = 1.0
-offset_left = 20.0
-offset_top = 20.0
-offset_right = -20.0
-offset_bottom = -20.0
-
-[node name="ChantLabel" type="Label" parent="UI/ChantModal/VBox" unique_id=1050819730]
-layout_mode = 2
-text = "What do you chant?"
-horizontal_alignment = 1
-
-[node name="ChantInput" type="LineEdit" parent="UI/ChantModal/VBox" unique_id=1567125582]
-layout_mode = 2
-size_flags_horizontal = 3
-placeholder_text = "Enter words or phrases..."
-
-[node name="ButtonRow" type="HBoxContainer" parent="UI/ChantModal/VBox" unique_id=1234155066]
-layout_mode = 2
-
-[node name="CancelButton" type="Button" parent="UI/ChantModal/VBox/ButtonRow" unique_id=981349768]
-layout_mode = 2
-size_flags_horizontal = 3
-text = "Cancel"
-
-[node name="ConfirmButton" type="Button" parent="UI/ChantModal/VBox/ButtonRow" unique_id=1679853379]
-layout_mode = 2
-size_flags_horizontal = 3
-text = "Chant"
-
 [node name="DevBar" type="LineEdit" parent="UI" unique_id=9362593]
-anchors_preset = 12
-anchor_top = 1.0
+anchors_preset = 10
 anchor_right = 1.0
-anchor_bottom = 1.0
-offset_left = 8.0
-offset_top = -48.0
-offset_right = -8.0
-offset_bottom = -8.0
-
-[node name="HUD" type="Label" parent="UI" unique_id=1598031432]
 offset_left = 12.0
 offset_top = 12.0
-offset_right = 300.0
-offset_bottom = 120.0
+offset_right = -12.0
+offset_bottom = 48.0
+grow_horizontal = 2
+
+[node name="HUD" type="Label" parent="UI" unique_id=1598031432]
+offset_left = 14.0
+offset_top = 56.0
+offset_right = 376.0
+offset_bottom = 320.0
+theme_override_font_sizes/font_size = 11
 text = "dots: 0"
 
 [node name="ZoomSlider" type="VSlider" parent="UI" unique_id=1639998854]
-offset_left = 30.0
-offset_top = 100.0
-offset_right = 50.0
-offset_bottom = 300.0
+anchors_preset = 6
+anchor_left = 1.0
+anchor_top = 0.5
+anchor_right = 1.0
+anchor_bottom = 0.5
+offset_left = -36.0
+offset_top = -80.0
+offset_right = -16.0
+offset_bottom = 80.0
+grow_horizontal = 0
+grow_vertical = 2
 min_value = 1.12
 max_value = 3.0
 step = 0.01

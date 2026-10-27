@@ -2269,7 +2269,7 @@ This commit banks the whole session stack: linear selection (T2.c), the Tier-1 m
 
 ---
 
-## 2026-07-26 — CURRENT STATE. Session arc merged to main (PR #1). **Hydration entry — START HERE.**
+## 2026-07-26 — Session arc merged to main (PR #1). **Hydration entry — SUPERSEDED by 2026-07-28 (soul-dilution) below.**
 
 Fresh session: read THIS entry + `RECONCILIATION.md` + `Noema_Design_Bible_v0.4.docx` before any design work. The four older "hydration entry" markers above are historical (superseded).
 
@@ -2301,4 +2301,123 @@ Soul-weighted chant potency is live (S.c, first canon call): soul multiplies a c
 2. **mark → motif** (T1.e step 3) — finishes the collapse; starts the Tier-3 feedback layer.
 3. **Combat defense balance** — defenders win only when they commit (0%→45%); `attack+defend` favors aggressors. Pair with #1.
 
-### Parked tuning (need MULTIPLE runs, not one): builders' build CCE weight (build dominance is weight-driven, NOT the banner mechanic); `FIELD_BASE_BIT` build + `BUILD_START_CHANCE` (map-wide block volume); a `BLOCK_MAX` cap (blocks are the one uncapped growth term). Also parked: dilution/blending (S.a), server/LLM/MP spine (S.b), affinity/frequency dials, multi-word chant parsing.
+### Parked tuning (need MULTIPLE runs, not one): builders' build CCE weight (build dominance is weight-driven, NOT the banner mechanic); `FIELD_BASE_BIT` build + `BUILD_START_CHANCE` (map-wide block volume); a `BLOCK_MAX` cap (blocks are the one uncapped growth term). Also parked: ~~dilution~~/blending (S.a — dilution now ON, see 07-28), server/LLM/MP spine (S.b), affinity/frequency dials, multi-word chant parsing.
+
+---
+
+## 2026-07-28 — Soul loop closed: standing soul drives dilution. **Hydration entry — SUPERSEDED by 2026-10-23 below.** (Committed `fb611ec` on 2026-10-23; unmerged. Playtested alone 2026-10-08, run `1791475804`, 573 ticks — and with blending 2026-10-23, see that entry's Playtest section.)
+
+Fresh session: read THIS entry + `RECONCILIATION.md` (S.c "Update 2026-07-28" + S.a) + `Noema_Design_Bible_v0.4.docx` before design work.
+
+### Git
+On branch **`session/2026-07-28-soul-dilution`** off `main` (`bce91b8`). **NOT committed, NOT merged** — working tree dirty for review (per project rules). One file of logic (`main.gd`) + two docs (`RECONCILIATION.md`, `DEVNOTES.md`).
+
+### What changed (the "close the soul loop" decision, made this session)
+The deferred S.c question — *what makes LOW soul hurt* — is answered. Dustan's call: **soul is no longer spent; it is a standing per-colony level that drives the DILUTION rate.** Three parts:
+1. **Chant-draw removed.** `SOUL_CHANT_DRAW` gone. The potency multiplier (`SOUL_CHANT_GAIN/HALF`) **stays** — chants still bite harder with more soul — but chanting no longer draws the pool down.
+2. **Soul → dilution (the core).** Generational dilution re-enabled (`_spawn_dot_near` no longer forces `full_inheritance`), rate soul-driven via `_dilution_for_colony`: `DILUTION_MIN(0.7) + (1.0−0.7)·soul/(soul+SOUL_DILUTION_HALF(100))` → 0 soul = 0.70 (harsh drift), 100 = 0.85, asymptote 1.0. High soul → culture persists; starved → drifts to neutral. **§13 made structural:** raiders never gather → low soul → fast drift → attack lean erodes and can't be rebuilt.
+3. **Passive soul decay.** `SOUL_DECAY_RATE = 0.01`/tick, proportional, in new `_tick_soul_decay` (runs after `_tick_all_dots` so the tick's gathering lands first). Makes soul track *recent* gathering, prevents permanent stratification. Not a spend — background erosion. Set to 0.0 to disable.
+
+Self-reinforcing loop: autochant still refills each colony's lean soul-multiplied, so high-soul gatherers refill HARD **and** dilute SLOWLY (entrench); low-soul raiders refill weakly **and** dilute fast (erode).
+
+### Reverses prior canon
+Overturns S.c's "**spent, not standing**" bullet. Its two objections are answered: no-sink → dilution is soul's purpose + decay is its drain; stratification → decay makes a non-gathering colony slide back. Potency-half divergences (§5.4 4× "shout") unchanged. Recorded in RECONCILIATION S.c "Update 2026-07-28".
+
+### Verify
+`validate_script res://main.gd` → compiles clean. **Not yet run in Godot.** Telemetry now emits per-colony **`dilution`** in the `snapshot` record (alongside `soul`) — read the refill-vs-drift contest from it. **NEEDS MULTIPLE RUNS:** the band where low soul loses ground but high soul holds is set by `DILUTION_MIN`, `SOUL_DILUTION_HALF`, `SOUL_DECAY_RATE`, and autochant refill *together*. `SOUL_DECAY_RATE` is the knob most likely to bite (int-truncation makes tiny pools fade fast).
+
+### NEXT
+1. **Playtest-tune this** — run TEST_FIELD, slice telemetry from last `run_start`, watch per-colony `soul` + `dilution` + `primitives`: do gatherers hold their lean while raiders' attack weight erodes? Adjust the four levers above.
+2. Then: mark → motif (T1.e step 3); combat-defense balance (still open).
+
+### Constants added/removed in `main.gd`
+Added: `DILUTION_MIN`, `DILUTION_MAX`, `SOUL_DILUTION_HALF`, `SOUL_DECAY_RATE`. Removed: `CCE_DILUTION`, `SOUL_CHANT_DRAW`. New funcs: `_dilution_for_colony`, `_dilution_snapshot`, `_tick_soul_decay`.
+
+---
+
+## 2026-10-23 — Chants compose (baked lexicon); CCE blending built; then portrait UI, space sky, sun. **Hydration entry — SUPERSEDED by 2026-10-27 below.** (Everything here is committed + pushed, through `e490757`.)
+
+Fresh session: read THIS entry + `RECONCILIATION.md` (S.a, S.b, T1.c) + `Noema_Design_Bible_v0.4.docx` before design work.
+
+### Git
+Branch **`session/2026-07-28-soul-dilution`**, pushed to `origin` (Dustan's go-ahead). Two commits on top of `main`'s `bce91b8`: soul-dilution (`fb611ec`), then this session's chant + blending + dial-dilution fix + free camera. **Not merged.** PR **dkentbrown/dots#2** open against `main`. Playtested — see the Playtest section below.
+
+### Decisions (Dustan, this session)
+- **Chant engine = baked word table, not a runtime LLM.** Runtime LLM cost was the concern (server GPU, or a 400MB–1GB on-device model that the server would also have to trust). The table is an LLM's judgment baked in at authoring time: zero runtime cost, ships with the game. The same `_interpret_chant` seam can later send unknown words to a server LLM with a shared cache.
+- **Blending = contact exchange + border births.** "Reproduction and value sharing": bible §12 contact swap, plus children born at a border inherit a partly foreign culture. Child stays in the parent's colony.
+
+### What changed in `main.gd`
+1. **Chant interpreter.** `_process_chant_locally` no longer does a whole-string exact lookup. `_interpret_chant` lowercases, strips apostrophes, splits on letters, and sums a recipe fragment for every known word; per-chant caps (`CHANT_MAX_WEIGHT` = 2×`CHANT_WEIGHT`, `CHANT_MAX_DIAL` = 0.15) stop a repeated word from stacking. `CHANT_LEXICON` = 30 synonym groups / 401 words covering every verb, move-mode and dial; `CHANT_RECIPES` (52 hand-tuned words) is kept and wins on overlap. Lookup strips -s/-es/-ed/-ing/-er/-ers/-ly (re-adds a dropped e, undoubles a consonant). Negators flip the next known word (`never fight` lowers attack; they toggle, so `never stop fighting` raises it); intensifiers (`very`, `forever`…) scale it ×1.5; stopwords drop silently. Peace words carry a NEGATIVE attack delta (a new push, not an undo). The bible's §5.3 examples now parse (`wander far`, `sharp bladed warriors`, `build tall toward the moon`). **`build` is now chantable** (closes the T1.a successor gap). Single-word chants apply exactly as before.
+2. **Telemetry `chant_parsed`** record per player chant: `text`, `matched`, `unmatched`. The `unmatched` list is the to-do list for growing the table.
+3. **Contact blending** (`_tick_blending`, after `_tick_all_dots`): living dots from different colonies within `BLEND_RADIUS` = 2 cells (5×5) step toward each other by `BLEND_RATE` = 0.01 of the gap per pair per tick, across motion/action/modes/dials. Sum-preserving. Radius is 2, not 1, because drift refuses to enter a foreigner's 3×3 — radius 1 would only see combat fronts. Cells are bucketed and scanned forward-half only, so each pair is visited once (~13 lookups per occupied cell, not 25 per dot).
+4. **Border births** (`_create_dot`): if the parent has living foreign dots within `BLEND_RADIUS`, the child inherits from a scratch copy mixed `BIRTH_BLEND` = 0.25 toward their mean CCE, then diluted at its own colony's soul rate.
+5. **Telemetry snapshot `blend`**: per colony `{contacts, births}`, ACCUMULATED since the previous snapshot (cleared after writing).
+6. **Free camera orbit** (Dustan): the yaw/pitch orbit with its ±87° pitch clamp and fixed world-up is replaced by a trackball `orbit_basis` that drag rotates about the camera's own axes (`_orbit`). No limit, rolls over the poles; "north up" is no longer enforced. Drag directions unchanged; `_focus_on_colony` still frames the colony north-up at spawn. No roll gesture (drag only, by choice).
+7. **UI/UX pass + phone-shaped preview** (Dustan, after the playtest; uncommitted). **PORTRAIT — Dustan's canon call, overrides bible §14's "landscape" (fold into v0.5).** Base viewport 390×844 (iPhone portrait points, ~9:19.5), `handheld/orientation = "portrait"`, editor run window override 780×1688 px (= 390×844 pt on a 2× Retina screen; DisplayServer sizes are physical pixels on this Mac), `canvas_items`/`expand` stretch kept. Chant box sits at 30% height (above where a phone keyboard lands), full width minus 24px margins; Chant button 36px off the bottom (home-indicator room). Debug: dev bar full-width at top, HUD under it at 11px, zoom slider right edge. Camera left at `KEEP_HEIGHT`, so at default zoom the globe spans the full screen width.
+8. **Space background** (Dustan; uncommitted). The grey background is replaced by a procedural sky shader, `space_sky.gdshader`, on the `WorldEnvironment`'s Sky: near-black base, faint fbm nebula haze (indigo/teal), a soft galactic band, and two star layers (dense dim + sparse bright, blue-to-warm tints). Static (no TIME), so the radiance map is built once; stars sit fixed in world space and drift as the camera orbits. Ambient light is unchanged (`Color` source, white 0.85), so the globe's lighting is the same. Tunables are shader uniforms, editable in the Inspector under WorldEnvironment → Environment → Sky → Sky Material: `nebula_strength` (0.65), `star_density`, `star_brightness`, colours, `band_axis`.
+9. **Orbiting sun** (Dustan; uncommitted). The `DirectionalLight3D` now orbits the globe (`_update_sun`, every frame) on WALL-CLOCK time — the phase is `unix_time mod day`, so the time of day carries across sessions instead of resetting. Full revolution: `SUN_DAY_SECONDS` = 24 h; `SUN_FAST_DAY = true` (testing) swaps in `SUN_TEST_DAY_SECONDS` = 20 s. Orbit sits `SUN_DECLINATION_DEG` = 23.4° above the equator (Earth's tilt), which also lifts the sun just past the globe's limb (19.5° at zoom 3.0) when you view the night side. `space_sky.gdshader` draws the sun from `LIGHT0_DIRECTION`: disk (`sun_radius` 0.025 rad) + tight and wide glow (`sun_glow`); the globe eclipses it naturally. Sky `process_mode` set to REALTIME since the sky now changes every frame. Purely visual — no sim effect.
+10. **Real night side** (Dustan; uncommitted). Environment ambient energy 0.85 → **0.06** (0.15 was tried first but still read mid-grey on screen after sRGB conversion), so the unlit hemisphere is near-dark charcoal. To keep the day side about as bright as before, `DirectionalLight3D.light_energy` 1.0 → **1.8**. Everything on the globe except the globe itself is emissive (dots 0.8, blocks/walls 0.6, specks 1.2, marks 0.4), so colonies still show at night; unrevealed (fogged) colonies are very dim there. Project-wide theme `ui_theme.tres` (`gui/theme/custom`): dark translucent pill buttons, rounded input with a focus ring, dimmed backdrop, soft label shadow. Debug overlay (stats HUD, dev chant bar, zoom slider) hidden by default (`DEBUG_UI_DEFAULT`), toggled with backtick. Chant dialog: centred box on a dimmed full-screen backdrop; tap outside or Esc cancels, Enter opens it on desktop; Cancel is a flat text button; world doesn't orbit/zoom while it's open. A chant echoes as fading text above the button (`_echo_chant`). Not run in Godot by Claude.
+
+### Verify
+`validate_script res://main.gd` → compiles clean. Offline dry-run of the word matcher on sample chants behaved as intended (no duplicate words across tables). **Playtested** — see the next section.
+- Chant: type a phrase in the dev bar; the Output panel prints matched/unmatched; `chant_applied` shows the composed recipe.
+- Blending: slice telemetry from the last `run_start`; `blend.contacts` should be non-zero once colonies meet, `blend.births` smaller. Watch for colonies' `primitives` mixes drifting toward their neighbours'. With `TEST_FIELD_DISCRETE_COLORS = true` dots are coloured by colony, so blending is invisible on screen; set it `false` to see CCE tint shift at borders.
+- **Perf watch:** blending adds one bucketed neighbourhood pass per tick. If ticks hitch at full field population, raise the interval or lower `BLEND_RADIUS`.
+
+### Playtest 2026-10-23 — run `1792770174`, 1,694 ticks (~28 min), TEST_FIELD, all of the above
+(Two earlier runs today, `1792769713`/`1792769887`, stopped at t20/t28 — before first contact, no chants. Ignore them.)
+
+**Chants — all as designed.** 5 typed into the dev bar (all applied to colony 0, soul 0 → mult 1.0):
+- `uild tall toward the moon` (typo) → matched tall, moon; `uild` logged unmatched; partial recipe still applied.
+- `build tall toward the moon` → build +0.16 (hit `CHANT_MAX_WEIGHT`), spiral_path +0.04, range +0.15 (hit `CHANT_MAX_DIAL`).
+- `never stop fighting` → negators cancelled → attack +0.08, intensity +0.05.
+- `gather the souls of the living` → gather/observe +0.16, reproduce +0.08 (`living` → live).
+- `Tenla` → nothing matched, nothing applied, logged unmatched. Pasted curly quotes were ignored.
+
+**Blending — active and meaningful.** First contact t49; ~869k contact pair-ticks and 2,732 border births over the run.
+- **A culture outlived its colony.** Confront's gather share rose 0.06 → 0.28 while it bordered the gatherers (t1–500), peaking as the gatherers collapsed (pop 88 at t500, extinct t764). Cohesive's gather then rose to 0.21 (t800–1100) as confront's fell — apparently relayed on — and both were back at the 0.08 field baseline by ~t1500. The gatherers' habit persisted ~700 ticks after their last dot (t764 → ~t1500): the bible's core question, visible in data.
+- **Identity held.** The survivors' move-modes stayed distinct at the end (cohesive 0.64 cohesion, dispersive 0.80 dispersion, confront 0.82 confront); cohesive picked up 0.20 dispersion. Current `BLEND_RATE`/`BIRTH_BLEND`/`BLEND_RADIUS` look reasonable — no change recommended yet.
+
+**Soul / dilution — works mechanically.** Dilution spanned 0.70–0.85. Soul plateaus ~100–113 (decay vs inflow); only colonies that actually gather get there. The survivors' late soul rise (t800+) most likely reflects fewer colonies competing for specks, not culture.
+
+**Survival — decided by the test harness, not culture (corrects the 10-23 guess that the dial bug drove the die-off).** Survivors at the 500 cap continuously from t1358: cohesive, dispersive, confront. All 7 others extinct (builders t373, bulwark t536, warband t720, spiralers t742, gatherers t764, markers t908, movers t1320). Mechanism: `_tick_autochant` re-chants each colony's lean every 5 ticks. A specialist lean raises a TOP-LEVEL verb (move, mark_surface, gather, build, spiral_path; attack/defend after t50), which under linear selection crowds `reproduce` out of the pool — movers fell from 0.12 to ≤0.01 reproduce share. The three survivors' leans raise only a MOVE-MODE, which sits under `move` and never competes, so their reproduce share held ~0.23. Movers had soul ~100 / dilution 0.85, so their culture held — which is exactly what killed them (the bible's "Dying Wanderers" ECB). The same pattern appears in the 10-08 run. Because lean shape decides survival, this run can't show whether the dial-dilution fix changed population outcomes.
+
+**Not measurable from telemetry:** tick hitching / perf. Ask Dustan.
+
+### Open / next
+1. ~~**Dials dilute toward 0, not their neutral baseline.**~~ **FIXED same session (Dustan's OK).** `_create_dot` used to multiply dials by the dilution rate, so `range`/`intensity` (baseline 0.5) shrank every generation (0.5 → 0.35 at soul 0) and dragged reproduce chance down with intensity. Dials now dilute toward their `NEUTRAL_CCE` value: `child = base + (parent − base) · dilution` (bible §9). Verb/mode layers unchanged — their baseline is 0.0, so plain scaling already was toward neutral.
+2. **Harness design question (needs Dustan):** the test field's autochant leans decide who survives (see Playtest). Either give specialist leans a reproduce share (as warband/bulwark's neutral lean has) so the field tests culture rather than lean shape, or keep it as intended — a monoculture that starves its own reproduction dies, and a real player who chants only one thing will hit the same wall.
+2b. Blending and soul-dilution values are still placeholders, but the 10-23 run gives no reason to move them yet.
+3. Grow the lexicon from `unmatched`. `frequency`/`affinity` dials are still unbuilt, so words like `rapid`, `swarm`-as-frequency and `toward X` have no direct target.
+4. Still open from before: mark → motif (T1.e step 3); combat-defense balance.
+
+---
+
+## 2026-10-27 — CURRENT STATE. Word cloud replaces the chant box. **Hydration entry — START HERE.** (All committed + pushed, UNMERGED.)
+
+Fresh session: read THIS entry, then the 2026-10-23 entry above (chants, blending, playtest findings, UI/sky/sun), then `RECONCILIATION.md` (new CLIENT / UX section) and `Noema_Design_Bible_v0.4.docx`.
+
+### Git
+Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open against `main`. `e490757` (portrait UI pass, space sky, orbiting sun, night lighting), then the word cloud + vocabulary expansion below in the commit after it — all pushed. Dustan has looked at the cloud in-game ("looks fine"); no telemetry run read yet.
+
+### Canon calls (Dustan) — see RECONCILIATION U.a / U.b
+- **Portrait**, not landscape (overrides bible §14).
+- **The chant is composed from a drifting word cloud, not typed** (amends bible §4 "a button opens a text input" and §7's free-language premise). Typing survives only in the debug dev bar.
+
+### Word cloud — agreed spec, as built
+- `word_cloud.gd` (a Control that `main.gd` creates in `_ready` and adds under `UI`): 3 rows drifting sideways at 14 / −20 / 17 px/s in a band across the bottom (~166 px tall plus a 28 px home-indicator margin), fading at the edges. Rows pause while a finger is down; a touch that starts on the band doesn't orbit the globe (`_input` checks `word_cloud.get_global_rect()`).
+- All words share one size and colour.
+- **Gestures:** tap → the word floats up into the chant line; double-tap (second tap within 0.3 s near the first) → the word just added becomes "very <word>"; swipe down on a word → "never <word>"; tap a word in the line → it goes back. "never"/"very" never appear in the cloud themselves.
+- **Chant line:** up to 5 words in tap order, showing exactly what will be cast. It brightens from 55% to full over **4 s after its last change** (paused while a finger is down), then casts: the words fly to your colony's screen position and shrink and fade, or just rise and fade if your colony is on the far side. The cast text goes through `_process_input`, so `chant_parsed` / `chant_applied` telemetry is unchanged. The old text echo is gone.
+- **Supply (`_pick_cloud_word`):** words are grouped into **meanings** by identical recipe (`_build_chant_meanings`): 712 words → 63 meanings after the vocabulary expansion below (was 453 → 33). One meaning on screen at a time; synonyms rotate through a shuffled order. Each new word's source: 50% FAMILIAR (meaning weighted by affinity to LOCAL_COLONY's mean CCE), 20% CONTACT (a colony that blended with yours within 30 ticks, via `_local_contacts` recorded in `_tick_blending`), the rest NOVEL (uniform). If no contact or no affinity, it falls back to uniform. Constants: `CLOUD_MIX_FAMILIAR`, `CLOUD_MIX_CONTACT`, `CLOUD_CONTACT_MEMORY_TICKS` (placeholders).
+- **Vocabulary expansion (Dustan: "flesh out our words"):** 30 new **combination meanings** in `CHANT_LEXICON` (marked "combinations (2026-10-27)"), each blending two behaviours on the fixed schema, 6–11 words each. E.g. pathfinder (move + observe + far), procession (move + cohesion), stillness (move DOWN: dwell/linger/stay), council (cohesion + observe), empire (dispersion + build), stealth (attack + observe, quiet), frenzy (attack ×1.5, defend DOWN), duel/honor (attack + defend), warpaint/sigil (mark + attack), alliance (cohesion, attack DOWN), watchtower (defend + observe), patrol, guardian (defend + cohesion), resilience, ornament (build + mark — T1.e's ornament motif), village, megalith, delve, farm, trade, hunger, lineage/ancestors (reproduce + mark), vigor, dream/oracle (observe + spiral), survey, beacon, lament, chant/hymn/prayer (mark + cohesion), cycle/tide/rebirth (spiral + reproduce), storm. Thin meanings padded (wanderlust, love, plus new range −0.1 and intensity −0.1 groups). Now 63 meanings; all have ≥5 words except the lone hand-tuned "spiral". No duplicates or function-word collisions. Side effect for typed chants: "gathering"/"meeting" now mean council, not gather/confront.
+- **Removed:** `ChantButton` and `ChantModal` (+ children) from `main.tscn`; the chant box code, Enter-to-open / Esc-to-close, the modal input guard, and the chant echo from `main.gd`. `ui_theme.tres` still carries now-unused Button/Panel styles (harmless).
+
+### Verify
+`validate_script` clean on `main.gd` and `word_cloud.gd`; the scene reloads in the editor with only DevBar/HUD/ZoomSlider under `UI`; meaning grouping checked against the real word tables in the editor. **Not run in Godot by Claude** — the cloud only exists at runtime. Check: drift and edge fade; tap / double-tap / swipe-down / tap-to-return; the 4 s brighten-and-cast; the flight to your colony; no globe rotation when dragging on the band. Desktop: left click = tap, quick double click = very, left-drag down = never.
+
+### Open / next
+1. Playtest the cloud in-game; tune speeds, spacing, timings (all consts at the top of `word_cloud.gd`).
+2. The FAMILIAR/CONTACT mix only shows up over minutes. Watch whether the cloud visibly leans toward your culture and your neighbours'.
+3. Still open from before: the test-field autochant lean question (10-23 Open/next #2); mark → motif; combat-defense balance.
+4. Minor: `_interpret_chant`'s local `scale` shadows `Node3D.scale` (an editor warning); a one-word rename, offered, not done.

@@ -1,6 +1,6 @@
 # NOEMA — Bible ↔ Code Reconciliation
 
-**Status:** draft for review · created 2026-07-21 · restructured 2026-07-21 around the three-tier spine · updated 2026-07-24 (Tier 1 recipes; first canon call — S.c soul) · updated 2026-07-25 (T2.c RESOLVED — linear selection; T1.e canon call + shipped — Tier-1 move-mode collapse; three-tier build roadmap) · all merged to `main` via PR #1 (2026-07-26) · author: Claude Code (planning+implementation layer)
+**Status:** draft for review · created 2026-07-21 · restructured 2026-07-21 around the three-tier spine · updated 2026-07-24 (Tier 1 recipes; first canon call — S.c soul) · updated 2026-07-25 (T2.c RESOLVED — linear selection; T1.e canon call + shipped — Tier-1 move-mode collapse; three-tier build roadmap) · all merged to `main` via PR #1 (2026-07-26) · updated 2026-07-28 (S.c revised — soul becomes a standing level driving DILUTION; chant-draw retired; passive decay added; dilution re-enabled soul-modulated — branch `session/2026-07-28-soul-dilution`, unmerged) · updated 2026-10-23 (S.b chant engine = baked lexicon, multi-word chants compose, `build` chantable; S.a CCE blending BUILT — contact + border births; same branch, committed + pushed, unmerged) · updated 2026-10-27 (new CLIENT / UX section: U.a portrait, U.b word-cloud chant; vocabulary expanded to 712 words / 63 meanings; same branch, pushed, unmerged) · author: Claude Code (planning+implementation layer)
 **Sources:** `Noema_Design_Bible_v0.4.docx` (design canon) vs. `main.gd` (current code) + `DEVNOTES.md` (tactical log).
 
 ## Why this document exists
@@ -40,7 +40,8 @@ The bible's fixed vocabulary is motion = wander, cluster, spread, face_target, s
 ### T1.a — `gather` reachability — ✅ NOT A GAP (this row was wrong)
 **Correction (2026-07-24):** `gather` was already reachable. `CHANT_RECIPES` has carried `gather`/`collect`/`forage`/`harvest` since commit `209e057` ("feat: add gather chant trigger co-raising gather and observe"), each raising `gather` **and** `observe` by `CHANT_WEIGHT` — the co-raise is deliberate, because the composite needs a live speck observation to consume. The original claim here was drawn from a stale comment in `main.gd` (since corrected) that said "Dead primitives (gather/build/mark) intentionally absent".
 **The verb that is actually unreachable is `build`** — it has an executor (`_execute_build`) and COLONY0 starts it at 0.40, but no chant alias exists, so a player cannot raise it. Flagged, not fixed; not yet approved as work.
-`DECISION: n/a — no divergence. Successor gap: `build` alias, unsequenced.`
+**⮑ Update 2026-10-23:** `build` is chantable through `CHANT_LEXICON` (build/raise/tower/monument/…, plus upward words and fortification words that co-raise it).
+`DECISION: n/a — no divergence. Successor gap (`build` alias) closed 2026-10-23.`
 
 ### T1.b — `observe` (in code, not in bible)
 **Code:** a full action primitive (enemy/speck/ally/banner sensing → `pending_observe`). **Bible:** no `observe`. But the 2026-05-28 Tier 1 list *did* include it, so it has an internal claim to being a legit verb.
@@ -61,7 +62,8 @@ The bible's fixed vocabulary is motion = wander, cluster, spread, face_target, s
 `spiral` deliberately raises **both** the `spiral_path` primitive and the legacy `spiral` dial — they coexist until T1.d rules on retiring the dial. Payload shape is the bible's `/chant` contract (`{motion, action, dials}`), so S.b's contract alignment is satisfied: flipping `USE_SERVER` swaps where the dictionaries come from without touching `_apply_recipe`.
 
 **Not done:** multi-word chants. `_process_chant_locally` still does an exact whole-string lookup, so the bible's own §5.3 examples (`'wander far'`, `'build tall toward the moon'`) **do not parse**. Tokenizing on whitespace is ~5 lines. Unsequenced.
-`DECISION: BIBLE — done. Residual gap: multi-word chant parsing.`
+**⮑ Update 2026-10-23:** multi-word chants compose — see S.b "chant engine". The §5.3 examples parse.
+`DECISION: BIBLE — done. Multi-word residual closed 2026-10-23.`
 
 ### T1.d — dials (range, intensity built; frequency, affinity, spiral unresolved)
 **Bible dials:** range, intensity, frequency, affinity. **Code dials:** range, intensity, **spiral**, with frequency/affinity reserved-unbuilt.
@@ -163,13 +165,20 @@ Audited against the intent above:
 **Bible:** generational dilution (0.7) is *"the most important tuning variable"* — silence → drift → cultural death. CCE blending (passive contamination by proximity) is a central theme. **Code:** dilution is **disabled** (`full_inheritance = true`, testing posture); blending is **unbuilt**.
 **Assessment:** these two *are* the bible's thematic heart, and the game currently runs with neither. Re-enabling dilution is a near-instant flag flip that transforms how the sim feels; blending is medium work.
 **Rec: BIBLE — re-enable dilution once Tier 1 vocabulary is reachable enough for drift to be visible; build blending after. Cost: S (dilution) / M (blending).**
-`DECISION: ______`
+**⮑ Update 2026-07-28: dilution is now RE-ENABLED** — but not as a flat 0.7 flag. It arrived through S.c as a *soul-modulated* rate (`_dilution_for_colony`): `full_inheritance` is off on the reproduce path, and the rate rises with soul. So dilution and the soul economy are now one mechanism, not two. Blending remains unbuilt. Branch `session/2026-07-28-soul-dilution`, unmerged.
+**⮑ Update 2026-10-23 (Dustan): blending BUILT, as two channels** — "reproduction and value sharing":
+- **Contact** (bible §12): each tick, living dots of different colonies within `BLEND_RADIUS` = 2 cells step toward each other by `BLEND_RATE` = 0.01 of the gap, across motion/action/modes/dials. Convergent and sum-preserving. Radius 2 rather than 1 because drift keeps foreigners out of each other's 3×3.
+- **Border births** (extends §12 into reproduction): a child whose parent is in contact with foreigners inherits from a mix `BIRTH_BLEND` = 0.25 toward their mean CCE, then dilutes at its own colony's soul rate. The child stays in the parent's colony (bible §2: a colony's dots "may have divergent CCE profiles depending on their lineage and border exposure").
+- Answers two §16 questions provisionally (radius, rate) — all three values are placeholders pending playtest. Telemetry snapshot carries per-colony `blend {contacts, births}`.
+- **Fixed alongside (2026-10-23):** dilution used to multiply dials toward 0; dials now dilute toward their `NEUTRAL_CCE` baseline, as §9 requires.
+`DECISION: BIBLE — dilution re-enabled (soul-modulated, via S.c) 2026-07-28; blending built (contact + border births) 2026-10-23, on branch (unmerged), untuned.`
 
 ### S.b — the server / LLM / multiplayer spine (bible identity; unbuilt) ⚠️ launch milestone
 **Bible:** persistent MP, ~10k colonies, chants interpreted server-side by an LLM (Ollama), DB persistence, active/passive ticks, `/chant` `/sync` `/session`. **Code:** local-only prototype; `USE_SERVER = false`, "server not implemented"; chants from a local dictionary; no LLM/DB/MP/passive ticks.
 **Assessment:** the largest gap and the game's identity, but also the biggest lift. No reason to build it before the sim itself is worth persisting.
 **Rec: BIBLE (canon) + DEFER (sequencing). Cheap alignment now: shape the local recipe path (T1.c) to the `/chant` response contract so flipping `USE_SERVER` later is a one-line change. Cost: L (full spine) / S (contract alignment now).**
-`DECISION: ______` *(contract-alignment half is done — see T1.c)*
+**⮑ Chant engine call (Dustan, 2026-10-23): baked lexicon now, no runtime LLM.** A runtime LLM is a cost problem — server GPU time, or shipping a 400MB–1GB on-device model (which would also make the server trust client-made recipes, against §14's server authority). Instead `CHANT_LEXICON` bakes an LLM's interpretation into a table at authoring time: 401 words in 30 synonym groups targeting the fixed schema, composed per chant by `_interpret_chant` (inflection stripping, negation, intensifiers, per-chant caps). This keeps §7's boundary — recipes, never new primitives — but loses whole-sentence nuance (metaphor, irony) the bible's LLM would catch. Upgrade path, unchanged contract: unknown words (logged as `unmatched` in `chant_parsed` telemetry) go to a server LLM, results cached and shared across all players, so each word is interpreted once for everyone.
+`DECISION: BIBLE (canon, server LLM eventually) + CODE (baked lexicon as the shipping interpreter until then). Contract alignment done (T1.c); spine itself still DEFER.`
 
 ### S.c — soul: the resource economy and chant potency ⚠️ FIRST CANON CALL MADE
 
@@ -208,6 +217,28 @@ Shipped values (all placeholders): gain 4.0, half 100, draw 0.25 → 0 soul = 1.
 
 `DECISION: CODE — soul + speck economy and soul-weighted chant potency are canon; write both into bible v0.5 (new "Resources and Soul" section) and strike the §16 resource question. Cost: shipped (S) + M (bible v0.5 section).`
 
+**⮑ Update 2026-07-28 (Dustan) — soul becomes a STANDING level; the chant-draw is retired; soul now drives DILUTION.** This closes the soul loop by making low soul *hurt* (the question this whole section deferred). The new model, on branch `session/2026-07-28-soul-dilution`:
+- **The chant no longer spends soul.** `SOUL_CHANT_DRAW` is removed. The potency multiplier (`SOUL_CHANT_GAIN/HALF`) **stays** — chants still bite harder with more soul — but soul is no longer drawn down per chant.
+- **Soul modulates the dilution rate.** Generational dilution is re-enabled (`_spawn_dot_near` no longer forces `full_inheritance`), but the rate is soul-driven: `dilution = DILUTION_MIN + (DILUTION_MAX − DILUTION_MIN) · soul/(soul + SOUL_DILUTION_HALF)` (0.70 at zero soul → asymptote 1.0). High-soul cultures persist; soul-starved ones drift toward neutral. **This is the §13 mechanism made structural** — raiders never gather → low soul → fast drift → attack lean erodes and can't be rebuilt.
+- **Passive soul decay** (`SOUL_DECAY_RATE = 0.01`/tick, proportional) makes soul track *recent* gathering, not a lifetime hoard — the anti-stratification knob and soul's new "sink." Not a spend; background erosion.
+- **This reverses the "Spent, not standing" bullet above.** That call's two arguments against standing soul: the **no-sink** concern is answered (dilution is soul's purpose; decay is its drain); the **stratification** concern is answered by decay (a colony that stops gathering slides back). Both bullets ("Spent, not standing" + the §5.4 4× "shout" divergence) still apply to the *potency* half, which is unchanged.
+- **New tuning surface (needs MULTIPLE runs):** the band where low soul actually loses ground to dilution but high soul holds is governed by `DILUTION_MIN`, `SOUL_DILUTION_HALF`, `SOUL_DECAY_RATE`, and the autochant refill rate together. `SOUL_DECAY_RATE` is the most likely to bite. Telemetry now emits per-colony `dilution` in the snapshot for reading the refill-vs-drift contest.
+`DECISION: CODE (revised) — soul is a standing level driving potency + dilution, decaying passively; chant-draw removed. Shipped to branch, unmerged, awaiting playtest tuning. Fold into the same v0.5 "Resources and Soul" section.`
+
+---
+
+# CLIENT / UX (the player-facing surface)
+
+### U.a — orientation: portrait ⚑ CANON CALL 2026-10-23
+**Bible §14:** "Godot 4 mobile client (landscape, iOS and Android)." **Decision (Dustan):** the game is **portrait**. Preview base viewport 390×844, `handheld/orientation = "portrait"`.
+`DECISION: CODE — portrait supersedes §14's landscape (v0.5).`
+
+### U.b — the chant: a word cloud, not a text box ⚑ CANON CALL 2026-10-27
+**Bible §4:** "A button opens a text input in the center of the screen. The player types a word or phrase." **§7:** the LLM interprets *any* language ("words, phrases, metaphors, poetry, prayers").
+**Decision (Dustan):** the chant is **composed from a drifting word cloud** at the bottom of the screen. You tap words into a chant line (double-tap = "very", swipe down = "never"), and the line casts 4 s after its last change. No keyboard, no visible text box. The cloud is also a **cultural mirror**: words lean toward your colony's culture (familiar), toward cultures you're touching (contact — blending made visible) and toward random novelty, which partly answers §16's "visual feedback for CCE without a UI readout".
+**What it gives up:** §7's free language. The vocabulary is the baked lexicon, 712 words / 63 meanings after the 2026-10-27 expansion (adding combination meanings such as guardian = defend + cohesion and lineage = reproduce + mark), chosen from rather than typed. This sits naturally with S.b's baked-lexicon call; free typing survives only in the debug dev bar. If a server LLM arrives later, its natural role becomes *growing the vocabulary* the cloud draws from, not parsing free text.
+`DECISION: CODE — word-cloud chant supersedes §4's text input and narrows §7 (v0.5). Built and committed 2026-10-27; Dustan's in-game look: fine.`
+
 ---
 
 ## Bible's own open questions (§16) — still unresolved in the doc
@@ -237,12 +268,14 @@ Carry these into the roadmap: CCE-blending proximity radius & rate · ~~resource
 |-----|-----------|------|-------|
 | T1.a | `gather` reachability | **n/a — no gap** | row was wrong; `build` is the unreachable verb |
 | T1.b | `observe` (code, not bible) | | |
-| T1.c | recipes for new verbs | **BIBLE — shipped** | 2026-07-24; multi-word parsing still missing |
+| T1.c | recipes for new verbs | **BIBLE — shipped** | 2026-07-24; multi-word parsing added 2026-10-23 |
 | T1.d | dials (affinity/frequency/spiral) | | |
 | T2.a | mode architecture (banners vs emergence) | | **the big one** |
 | T2.b | banner gating too shallow | | |
 | T2.c | selection model (NS softmax vs bible linear) | **BIBLE (linear now)** | RESOLVED 2026-07-25; `SELECTION_SOFTMAX` flag, softmax deferred to Tier 2/3 capstone; three-tier roadmap added |
 | T3.a | monuments & wall lines | | follows T2.a |
-| S.a | dilution + blending | | identity; parked by Dustan |
-| S.b | server / LLM / MP spine | | launch milestone; contract alignment done |
-| S.c | soul economy + chant potency | **CODE** | 2026-07-24, **first call made**; shipped, needs tuning |
+| S.a | dilution + blending | **dilution re-enabled; blending built** | 2026-07-28: dilution ON, soul-modulated (via S.c). 2026-10-23: blending = contact + border births, untuned |
+| S.b | server / LLM / MP spine | **chant engine: baked lexicon** | 2026-10-23: no runtime LLM for now; server LLM + shared cache later for unmatched words; spine still deferred |
+| S.c | soul economy + chant potency | **CODE (revised 07-28)** | 07-24 first call; 07-28 revised — standing soul drives dilution, draw removed, decay added; branch unmerged, needs tuning |
+| U.a | orientation | **CODE — portrait** | 2026-10-23; supersedes §14 landscape |
+| U.b | chant input | **CODE — word cloud** | 2026-10-27; supersedes §4 text box, narrows §7 free language; vocabulary 712 words / 63 meanings |
