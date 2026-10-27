@@ -1,7 +1,15 @@
 extends Node3D
 
 const SPHERE_RADIUS = 1.0
-const ZOOM_MIN = 1.12
+# World scale (2026-10-27): the world is sized for WORLD_PLAYERS colonies at the density the
+# original 200x200 grid gave the 10-colony test field (WORLD_REFERENCE_COLONIES). The globe keeps
+# its size and the world gets FINER: WORLD_SCALE times more cells per side, every surface size
+# and step divided by WORLD_SCALE (so local behaviour, measured in cells, is unchanged), and
+# every per-area count multiplied by WORLD_SCALE squared. Ranges given in cells stay as they are.
+const WORLD_PLAYERS = 50
+const WORLD_REFERENCE_COLONIES = 10
+const WORLD_SCALE = sqrt(float(WORLD_PLAYERS) / float(WORLD_REFERENCE_COLONIES))
+const ZOOM_MIN = SPHERE_RADIUS + 0.12 / WORLD_SCALE
 const ZOOM_MAX = 6.0
 const ZOOM_SPEED = 0.08
 const PINCH_SPEED = 0.004
@@ -108,7 +116,7 @@ var cluster_by_defender = {}  # defender dot -> cluster reference (O(1) lookup)
 const SHAPE_D_SCALE = 2.0
 
 # Spatial grid
-const GRID_RES = 200
+const GRID_RES = int(round(200 * WORLD_SCALE))  # 200 at the reference density; 447 for 50 players
 const CELL_STEP = TAU / float(GRID_RES)  # one grid cell width in radians
 var spatial_grid = {}  # cell_key (Vector2i) -> array of dots
 var dot_cell = {}      # dot -> current cell_key, for incremental grid updates
@@ -137,9 +145,9 @@ var colony_counts = {}  # colony_id -> current dot count
 # Blocks (separate from population)
 const BLOCK_DEFEND_VALUE = 0.5
 const BLOCK_DECAY_TICKS = 300
-const BLOCK_MESH_SIZE = Vector3(0.031, 0.003, 0.031)  # match cell spacing so adjacent cells tile cleanly (TAU/GRID_RES \u2248 0.0314 at the equator)
-const BLOCK_HEIGHT_STEP = 0.003  # vertical spacing between stacked blocks (== mesh y-size)
-const WALL_MESH_SIZE = Vector3(0.031, 0.003, 0.0155)  # stage (c): half-thickness vs BLOCK_MESH_SIZE; long axis (x, perpendicular to threat) kept at full cell spacing to tile with future wall-line segments (stage e)
+const BLOCK_MESH_SIZE = Vector3(0.031, 0.003, 0.031) / WORLD_SCALE  # match cell spacing so adjacent cells tile cleanly (TAU/GRID_RES \u2248 0.0314 at the equator)
+const BLOCK_HEIGHT_STEP = 0.003 / WORLD_SCALE  # vertical spacing between stacked blocks (== mesh y-size)
+const WALL_MESH_SIZE = Vector3(0.031, 0.003, 0.0155) / WORLD_SCALE  # stage (c): half-thickness vs BLOCK_MESH_SIZE; long axis (x, perpendicular to threat) kept at full cell spacing to tile with future wall-line segments (stage e)
 const WALL_COLOR = Color(0.0, 0.95, 0.8)  # bright teal — distinguishes fence segments from the pale defend-blue of monument blocks; not a CCE hue, so no semantic clash
 var block_counts = {}  # colony_id -> current block count
 var soul_pool = {}   # colony_id -> accumulated soul units
@@ -178,13 +186,22 @@ const TEST_POPULATION = 15
 # HALF pivot to chanting attack and HALF to defence — standing in for combat breaking out.
 # Set TEST_FIELD = false to restore the shipped player-vs-enemy spawn exactly.
 const TEST_FIELD = true
-const TEST_FIELD_REVEAL_ALL = true    # bypass fog so all ten are observable from tick 0
+const TEST_FIELD_REVEAL_ALL = true    # bypass fog so every field colony is observable from tick 0
 const TEST_FIELD_DISCRETE_COLORS = true  # colour dots by colony (see COLONY_PALETTE) instead of
 										 # by CCE tint, so specs are told apart at a glance. The CCE
 										 # colouring in _update_dot_color is untouched and returns
 										 # when this is false.
 const TEST_FIELD_SEED_POP = 8         # dots each colony starts with (founder + neighbours);
 										 # >1 so a colony can't die to spawn RNG before reproducing.
+# Field size (2026-10-27): fill the world to its WORLD_PLAYERS capacity. Colony i plays archetype
+# i % 10 from TEST_FIELD_COLONIES, so 50 colonies = 5 of each. Colonies 0-9 keep COLONY_PALETTE;
+# the rest get generated golden-ratio hues (see _build_test_field).
+const TEST_FIELD_COLONY_COUNT = WORLD_PLAYERS
+# Founders scattered uniformly at RANDOM over the sphere (uneven, with natural clumps and gaps)
+# rather than the even Fibonacci lattice; false restores the lattice. A founder is never placed
+# within TEST_FIELD_MIN_FOUNDER_CELLS of another, so seed clusters can't overlap.
+const TEST_FIELD_RANDOM_SPREAD = true
+const TEST_FIELD_MIN_FOUNDER_CELLS = 6
 const AUTOCHANT_INTERVAL = 5          # ticks between lean applications
 const AUTOCHANT_COMBAT_TICK = 50      # generalists switch to their combat lean at/after this tick
 const LEAN = 0.02                     # per-application CCE delta, BEFORE the soul multiplier
@@ -218,7 +235,8 @@ const TEST_FIELD_BASE = {
 	"action": { "mark_surface": FIELD_BASE_BIT, "build": FIELD_BASE_BIT, "gather": FIELD_BASE_BIT, "defend": FIELD_BASE_BIT, "attack": FIELD_BASE_BIT, "reproduce": 0.25, "observe": 0.12 }
 }
 
-# Index IS the colony id (also indexes COLONY_PALETTE). Entry 0 is LOCAL_COLONY (camera home).
+# The ten ARCHETYPES the field cycles through (colony i plays entry i % 10; see
+# TEST_FIELD_COLONY_COUNT). Entry 0 is LOCAL_COLONY (camera home).
 # 0-7 FOCUSED specialists (primary spiked in start, pumped by lean); 8-9 GENERALISTS (broad
 # blend, neutral lean until AUTOCHANT_COMBAT_TICK, then combat_role decides attack vs defend).
 # All 11 primitives are represented: 8 as specialists, attack+defend via the generalist split,
@@ -267,9 +285,9 @@ var _next_dot_id = 1
 var _tick_num = 0
 
 # Tuning constants (formerly magic numbers)
-const SPAWN_NUDGE = 0.018
-const DEFEND_STEP = 0.01
-const DOT_SURFACE_OFFSET = 0.0075
+const SPAWN_NUDGE = 0.018 / WORLD_SCALE
+const DEFEND_STEP = 0.01 / WORLD_SCALE
+const DOT_SURFACE_OFFSET = 0.0075 / WORLD_SCALE
 const PARALLEL_EPSILON = 0.0001
 const MAX_CCE_FOR_SATURATION = 1.5
 # Soul supply. Specks stay scattered uniformly across the surface (bible §16), but at ~10x
@@ -279,12 +297,12 @@ const MAX_CCE_FOR_SATURATION = 1.5
 # wander peaked at 5). Denser scatter puts enough in observe range for gather to actually
 # feed the pool. SPECK_MAX caps the field because specks do NOT decay — only collection
 # removes them — so an uncapped faucet would accumulate without bound before collection ramps.
-const SPECK_SPAWN_PER_TICK = 5         # specks spawned per tick (uniformly random cells)
-const SPECK_MAX = 1500                 # surface-saturation cap (~3.75% of cells); spawning pauses at the cap
+const SPECK_SPAWN_PER_TICK = int(round(5 * WORLD_SCALE * WORLD_SCALE))  # per tick, uniformly random cells; per-area
+const SPECK_MAX = int(round(1500 * WORLD_SCALE * WORLD_SCALE))  # surface-saturation cap (~3.75% of cells); spawning pauses at the cap
 const REPRODUCE_CHANCE_MIN = 0.1       # reproduce probability at intensity 0
 const REPRODUCE_CHANCE_MAX = 0.9       # reproduce probability at intensity 1
-const MOVE_NUDGE_MIN = 0.01            # undirected-drift nudge at range_val 0
-const MOVE_NUDGE_MAX = 0.08            # undirected-drift nudge at range_val 1
+const MOVE_NUDGE_MIN = 0.01 / WORLD_SCALE  # undirected-drift nudge at range_val 0
+const MOVE_NUDGE_MAX = 0.08 / WORLD_SCALE  # undirected-drift nudge at range_val 1
 # Baseline weight of plain drift in the move-mode roulette (T1.e). Gives a mode-less dot a
 # guaranteed drift and keeps even a mode-heavy dot from locking 100% into one bias.
 const MOVE_DRIFT_BASE = 0.15
@@ -297,13 +315,13 @@ const FACE_SCAN_RADIUS_MAX = 8        # ...at range 1
 # mark_surface: persistent surface marks; permanence and size scale with the intensity dial
 const MARK_TTL_MIN = 60               # ticks a mark persists at intensity 0
 const MARK_TTL_MAX = 400              # ...at intensity 1
-const MARK_SIZE_MIN = 0.006           # mark quad edge at intensity 0
-const MARK_SIZE_MAX = 0.014           # ...at intensity 1
+const MARK_SIZE_MIN = 0.006 / WORLD_SCALE  # mark quad edge at intensity 0
+const MARK_SIZE_MAX = 0.014 / WORLD_SCALE  # ...at intensity 1
 # Live-mark cap. Each mark is its own mesh and they persist for MARK_TTL ticks, so with a
 # large population all carrying baseline mark_surface they accumulate quadratically — a
 # 10-colony run hit 22,744 live marks (71% of all scene objects) and tanked the framerate.
 # At the cap, new marks are skipped until TTL expiry frees slots (same pattern as SPECK_MAX).
-const MARK_MAX = 2000
+const MARK_MAX = 2000  # a perf cap on live mark nodes, not a per-area count — not scaled by WORLD_SCALE
 
 const OBSERVE_BASE_RADIUS := 3
 const OBSERVE_SCALE := 20
@@ -607,6 +625,13 @@ const WordCloud = preload("res://word_cloud.gd")
 var dots = []
 var dot_data = {}
 var specks = []
+# Test field, built in _ready by _build_test_field: per-colony archetype spec and { name, color }.
+var _field_specs = []
+var _field_colors = []
+# cell -> Array of specks in that cell (oldest first). Specks never move, so the index only
+# changes in _create_speck and _remove_speck; it replaces full scans of `specks`, which grew 5x
+# with WORLD_SCALE.
+var speck_cells = {}
 var surface_marks = []  # [{node: MeshInstance3D, ticks_remaining: int}] — mark_surface output, decays by TTL
 # Per-tick tally of primitives selected by LOCAL_COLONY dots. Reset at the top of each
 # tick's dot pass, read into the telemetry snapshot at the end of the same tick.
@@ -739,6 +764,7 @@ func _ready():
 	_telemetry({ "type": "run_start", "run_id": int(Time.get_unix_time_from_system()), "grid_res": GRID_RES })
 	_build_chant_lexicon()
 	_build_chant_meanings()
+	_build_test_field()
 	if TEST_FIELD:
 		_spawn_test_field()
 	else:
@@ -1044,10 +1070,10 @@ func _tick_autochant() -> void:
 		return
 	if _tick_num % AUTOCHANT_INTERVAL != 0:
 		return
-	for i in range(TEST_FIELD_COLONIES.size()):
+	for i in range(_field_specs.size()):
 		if colony_counts.get(i, 0) <= 0:
 			continue
-		var spec = TEST_FIELD_COLONIES[i]
+		var spec = _field_specs[i]
 		var lean = spec["lean"]
 		# Generalists (those carrying a combat_role) pivot from their neutral lean to a combat
 		# lean once the run reaches AUTOCHANT_COMBAT_TICK — half to attack, half to defence.
@@ -1061,9 +1087,9 @@ func _update_hud():
 		return
 	if TEST_FIELD:
 		var field_lines = ["t%d   (combat lean @ t%d)" % [_tick_num, AUTOCHANT_COMBAT_TICK]]
-		for i in range(TEST_FIELD_COLONIES.size()):
-			var spec = TEST_FIELD_COLONIES[i]
-			var color_name = COLONY_PALETTE[i]["name"] if i < COLONY_PALETTE.size() else "?"
+		for i in range(_field_specs.size()):
+			var spec = _field_specs[i]
+			var color_name = _field_colors[i]["name"] if i < _field_colors.size() else "?"
 			# Tag the generalists with their combat role; uppercase once it's actually active.
 			var tag = ""
 			var role = spec.get("combat_role", "")
@@ -1340,8 +1366,7 @@ func _tick_all_dots():
 				if lock["until_tick"] == _tick_num:
 					# On-time resolution: pay out.
 					if lock["speck"] in specks:
-						lock["speck"].queue_free()
-						specks.erase(lock["speck"])
+						_remove_speck(lock["speck"])
 					# The soul credit sits OUTSIDE the speck-in-specks check on purpose.
 					# "The lock is the receipt": every resolved lock credits the pool whether
 					# or not the speck node survived, so simultaneous arrivers each credit.
@@ -1410,10 +1435,9 @@ func _tick_dot(dot: Node3D):
 		_log("[t%d] dot %d at (%d,%d) roll: %s" % [_tick_num, dot_data[dot]["dot_id"], cell.x, cell.y, chosen])
 	_execute_primitive(dot, chosen, cce["dials"])
 	var my_cell = _cell_key(dot.position.normalized())
-	for speck in specks:
-		if _cell_key(speck.position.normalized()) == my_cell:
-			dot_data[dot]["collect_lock"] = { "until_tick": _tick_num + 1, "speck": speck }
-			break
+	var specks_here = speck_cells.get(my_cell, [])
+	if not specks_here.is_empty():
+		dot_data[dot]["collect_lock"] = { "until_tick": _tick_num + 1, "speck": specks_here[0] }
 
 func _execute_primitive(dot: Node3D, primitive: String, dials: Dictionary):
 	var range_val = dials.get("range", 0.5)
@@ -1804,14 +1828,20 @@ func _execute_observe(dot: Node3D) -> void:
 	if enemy != null:
 		enemy_entry = { "pos": enemy.position.normalized(), "dot": enemy, "observed_tick": _tick_num }
 
-	# Speck: nearest speck within radius (linear scan — specks aren't grid-indexed)
+	# Speck: nearest speck within radius, scanning the cell window through speck_cells. Same
+	# metric as _torus_cell_dist_sq (u and v both wrap), so it finds what the old full scan did.
 	var speck_entry = null
 	var best_speck_dist = radius_sq + 1
-	for speck in specks:
-		var d = _torus_cell_dist_sq(my_cell, _cell_key(speck.position.normalized()))
-		if d <= radius_sq and d < best_speck_dist:
-			best_speck_dist = d
-			speck_entry = { "pos": speck.position.normalized(), "node": speck }
+	for du in range(-radius, radius + 1):
+		for dv in range(-radius, radius + 1):
+			var d = du * du + dv * dv
+			if d > radius_sq or d >= best_speck_dist:
+				continue
+			var cell = Vector2i(posmod(my_cell.x + du, GRID_RES), posmod(my_cell.y + dv, GRID_RES))
+			if speck_cells.has(cell):
+				var speck = speck_cells[cell][0]
+				best_speck_dist = d
+				speck_entry = { "pos": speck.position.normalized(), "node": speck }
 
 	# Ally: nearest same-colony dot (excluding self and blocks)
 	var ally_entry = null
@@ -2422,8 +2452,8 @@ func _update_dot_color(dot: Node3D):
 	# Blocks (monuments AND wall segments) render a dimmed shade so structures read as darker
 	# than living dots of the same colony; wall-vs-monument distinction is sacrificed here but
 	# preserved in the CCE colour scheme.
-	if TEST_FIELD_DISCRETE_COLORS and colony < COLONY_PALETTE.size():
-		var cc = COLONY_PALETTE[colony]["color"]
+	if TEST_FIELD_DISCRETE_COLORS and colony < _field_colors.size():
+		var cc = _field_colors[colony]["color"]
 		if dot_data[dot].get("is_block", false):
 			cc = cc.darkened(0.45)
 		mat.albedo_color = cc
@@ -2722,20 +2752,53 @@ func _make_field_cce(spec: Dictionary) -> Dictionary:
 					cce[layer][key] = source[layer][key]
 	return cce
 
+func _build_test_field() -> void:
+	# Per-colony archetype and colour for TEST_FIELD_COLONY_COUNT colonies. Built even when
+	# TEST_FIELD is off, because the discrete-colour overlay reads _field_colors either way.
+	for i in range(TEST_FIELD_COLONY_COUNT):
+		_field_specs.append(TEST_FIELD_COLONIES[i % TEST_FIELD_COLONIES.size()])
+		if i < COLONY_PALETTE.size():
+			_field_colors.append(COLONY_PALETTE[i])
+		else:
+			# Golden-ratio hue steps keep successive colonies as far apart in hue as possible.
+			var hue = fmod(float(i) * 0.618034, 1.0)
+			_field_colors.append({ "name": "hue%d" % int(hue * 360.0), "color": Color.from_hsv(hue, 0.7, 0.92) })
+
+func _random_founder_dir(placed: Array) -> Vector3:
+	# Uniform random point on the sphere (a normalised Gaussian vector), re-rolled while it lands
+	# within TEST_FIELD_MIN_FOUNDER_CELLS of an earlier founder. Gives up after 200 tries rather
+	# than loop forever on a crowded sphere.
+	var min_angle = TEST_FIELD_MIN_FOUNDER_CELLS * CELL_STEP
+	var dir = Vector3.UP
+	for _try in range(200):
+		dir = Vector3(randfn(0.0, 1.0), randfn(0.0, 1.0), randfn(0.0, 1.0)).normalized()
+		var clear = true
+		for p in placed:
+			if dir.angle_to(p) < min_angle:
+				clear = false
+				break
+		if clear:
+			break
+	return dir
+
 func _spawn_test_field():
-	# Founders spread evenly over the WHOLE sphere via a Fibonacci (golden-spiral) lattice —
-	# the standard way to scatter N points on a sphere near-uniformly, so no colony is crowded
-	# or isolated and each has room to grow before borders meet. A random rotation offset keeps
-	# runs from being identical. (Was a small shared circle when the field held five colonies.)
-	var n = TEST_FIELD_COLONIES.size()
+	# Founders are scattered at random over the whole sphere (TEST_FIELD_RANDOM_SPREAD), or spread
+	# evenly via a Fibonacci (golden-spiral) lattice with a random rotation offset when it's off.
+	var n = _field_specs.size()
 	var golden = PI * (3.0 - sqrt(5.0))
 	var phase = randf() * TAU
+	var placed = []
 	for i in range(n):
-		var y = 1.0 - (float(i) / float(max(1, n - 1))) * 2.0   # +1 (north) down to -1 (south)
-		var r_xz = sqrt(max(0.0, 1.0 - y * y))
-		var theta = golden * float(i) + phase
-		var dir = Vector3(cos(theta) * r_xz, y, sin(theta) * r_xz).normalized()
-		var spec = TEST_FIELD_COLONIES[i]
+		var dir: Vector3
+		if TEST_FIELD_RANDOM_SPREAD:
+			dir = _random_founder_dir(placed)
+		else:
+			var y = 1.0 - (float(i) / float(max(1, n - 1))) * 2.0   # +1 (north) down to -1 (south)
+			var r_xz = sqrt(max(0.0, 1.0 - y * y))
+			var theta = golden * float(i) + phase
+			dir = Vector3(cos(theta) * r_xz, y, sin(theta) * r_xz).normalized()
+		placed.append(dir)
+		var spec = _field_specs[i]
 		var preset = _make_field_cce(spec)
 		var founder = _create_dot(dir, null, i, preset)
 		known_colonies[i] = true
@@ -2759,8 +2822,8 @@ func _spawn_test_field():
 				continue
 			_create_dot(sdir, null, i, preset)
 			seeded += 1
-		_telemetry({ "type": "field_colony", "colony": i, "name": spec["name"], "pop": seeded, "lean": spec["lean"], "color": COLONY_PALETTE[i]["name"] if i < COLONY_PALETTE.size() else "?", "combat_role": spec.get("combat_role", "") })
-		print("[field] c%d '%s' (%s) founded with %d dots" % [i, spec["name"], COLONY_PALETTE[i]["name"] if i < COLONY_PALETTE.size() else "?", seeded])
+		_telemetry({ "type": "field_colony", "colony": i, "name": spec["name"], "pop": seeded, "lean": spec["lean"], "color": _field_colors[i]["name"], "combat_role": spec.get("combat_role", "") })
+		print("[field] c%d '%s' (%s) founded with %d dots" % [i, spec["name"], _field_colors[i]["name"], seeded])
 	if TEST_FIELD_REVEAL_ALL:
 		_update_all_dot_colors()
 	_focus_on_colony()
@@ -2845,7 +2908,7 @@ func _spawn_dot_near(parent: Node3D, colony: int = LOCAL_COLONY):
 func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_cce: Dictionary = {}, full_inheritance: bool = false) -> Node3D:
 	var dot = MeshInstance3D.new()
 	var box = BoxMesh.new()
-	box.size = Vector3(0.015, 0.006, 0.015)
+	box.size = Vector3(0.015, 0.006, 0.015) / WORLD_SCALE
 	dot.mesh = box
 	var mat = StandardMaterial3D.new()
 	mat.albedo_color = Color.CYAN
@@ -2917,7 +2980,7 @@ func _deep_copy_cce(source: Dictionary) -> Dictionary:
 func _create_speck(dir: Vector3) -> void:
 	var speck = MeshInstance3D.new()
 	var box = BoxMesh.new()
-	box.size = Vector3(0.008, 0.003, 0.008)
+	box.size = Vector3(0.008, 0.003, 0.008) / WORLD_SCALE
 	speck.mesh = box
 	var mat = StandardMaterial3D.new()
 	mat.albedo_color = Color(1.0, 0.85, 0.2)
@@ -2928,6 +2991,23 @@ func _create_speck(dir: Vector3) -> void:
 	speck.position = dir.normalized() * (SPHERE_RADIUS + DOT_SURFACE_OFFSET)
 	add_child(speck)
 	specks.append(speck)
+	# Index by the cell of the speck's ACTUAL position (what collision used to compare against),
+	# and remember it: specks spawn exactly on cell corners (_cell_to_dir), where recomputing the
+	# key can round into a neighbouring cell and strand a freed speck in the index.
+	var cell = _cell_key(speck.position.normalized())
+	speck.set_meta("cell", cell)
+	if not speck_cells.has(cell):
+		speck_cells[cell] = []
+	speck_cells[cell].append(speck)
+
+func _remove_speck(speck: Node3D) -> void:
+	specks.erase(speck)
+	var cell = speck.get_meta("cell")
+	if speck_cells.has(cell):
+		speck_cells[cell].erase(speck)
+		if speck_cells[cell].is_empty():
+			speck_cells.erase(cell)
+	speck.queue_free()
 
 func _tick_specks() -> void:
 	for _i in range(SPECK_SPAWN_PER_TICK):
@@ -2944,7 +3024,7 @@ func _create_surface_mark(dir: Vector3, color: Color, intensity: float) -> void:
 	var mark = MeshInstance3D.new()
 	var quad = BoxMesh.new()
 	var s = lerp(MARK_SIZE_MIN, MARK_SIZE_MAX, intensity)
-	quad.size = Vector3(s, 0.001, s)
+	quad.size = Vector3(s, 0.001 / WORLD_SCALE, s)
 	mark.mesh = quad
 	var mat = StandardMaterial3D.new()
 	mat.albedo_color = color

@@ -2393,7 +2393,7 @@ Branch **`session/2026-07-28-soul-dilution`**, pushed to `origin` (Dustan's go-a
 
 ---
 
-## 2026-10-27 — CURRENT STATE. Word cloud replaces the chant box. **Hydration entry — START HERE.** (All committed + pushed, UNMERGED.)
+## 2026-10-27 — Word cloud replaces the chant box. **Hydration entry — SUPERSEDED by 2026-10-27 (cont.) below.** (Merged to `main` via PR #2, `fb15778`.)
 
 Fresh session: read THIS entry, then the 2026-10-23 entry above (chants, blending, playtest findings, UI/sky/sun), then `RECONCILIATION.md` (new CLIENT / UX section) and `Noema_Design_Bible_v0.4.docx`.
 
@@ -2421,3 +2421,52 @@ Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open aga
 2. The FAMILIAR/CONTACT mix only shows up over minutes. Watch whether the cloud visibly leans toward your culture and your neighbours'.
 3. Still open from before: the test-field autochant lean question (10-23 Open/next #2); mark → motif; combat-defense balance.
 4. Minor: `_interpret_chant`'s local `scale` shadows `Node3D.scale` (an editor warning); a one-word rename, offered, not done.
+
+---
+
+## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED; separation stage 1 uncommitted on top.)
+
+Fresh session: read THIS entry, then the 2026-10-27 word-cloud entry and the 2026-10-23 entry above, `RECONCILIATION.md` (S.b update, CLIENT / UX), and the bible.
+
+### Git
+PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. The world scaling and the 50-colony field are committed + pushed; separation stage 1 (below) is uncommitted on top.
+
+### Multiplayer decisions (Dustan) — RECONCILIATION S.b
+1. **Server-side authority** (bible §14). The server runs the whole simulation; clients render it and send chants. Bible §15.2's `/sync` (clients upload their own dots) is dropped: it contradicts §14, and offline colonies need a server simulation anyway.
+2. **Active vs passive clocks:** **30 s** colony tick while the owner has the game open, **5 min** while they don't. **Clock rule:** *anything a colony owns runs on its own clock* (its dots choosing and acting, ageing and breeding, its soul decay, its monuments and marks decaying); *anything between colonies runs on the world clock* (every 30 s: combat resolution, blending, speck spawning). A sleeping colony takes initiative 10× less often but still fights back in fights already underway and blends symmetrically; its generations last 10× longer in real time (bible §11.3's temperament split). Risk to watch: active attackers start 10× more fights; a passive defence bonus is the fallback. Testing needs a time speed-up, like `SUN_FAST_DAY`.
+3. **World sized for 50 players**, one sphere; the test field stays at 10 colonies to judge the visuals.
+
+**Order of work:** (1) scale the world — done below; (2) active/passive clocks in the sim — testable single-player: your colony active while the window has focus, half the test colonies passive; (3) **separate the simulation from the visuals** — today each dot IS a MeshInstance3D and its position is its state, so a headless server can't run it; large, staged, and also unlocks batched dot rendering (MultiMesh); (4) server: headless Godot first (reuses the GDScript sim), networking, persistence, presence (drives active/passive), new-player placement (bible §16 "starting buffer").
+
+### Step 1 shipped (uncommitted): world scaled to 50 players
+- `WORLD_PLAYERS = 50`, `WORLD_REFERENCE_COLONIES = 10`, `WORLD_SCALE = sqrt(50/10) ≈ 2.236` at the top of `main.gd`. **The globe keeps its size; the world gets finer.**
+  - `GRID_RES` 200 → **447** (`CELL_STEP` follows automatically).
+  - Every surface size and step ÷ WORLD_SCALE: dot / speck / block / wall / mark meshes, `BLOCK_HEIGHT_STEP`, `DOT_SURFACE_OFFSET`, `SPAWN_NUDGE`, `DEFEND_STEP`, `MOVE_NUDGE_MIN/MAX`, `MARK_SIZE_MIN/MAX`.
+  - Per-area counts × WORLD_SCALE²: `SPECK_SPAWN_PER_TICK` 5 → **25**, `SPECK_MAX` 1500 → **7500**.
+  - `ZOOM_MIN` 1.12 → **1.054**, so you can get as close to the smaller dots as before.
+  - **Unchanged:** every range given in cells (blend, rally, banner, cohesion, face, observe, footprints) — cells and dots shrank together, so local behaviour in cells is identical. `MARK_MAX` stays 2000: it's a perf cap on live mark nodes, not per-area.
+- **Speck cell index** (`speck_cells`, `_remove_speck`): needed because specks grew 5×. The per-dot collision check now looks up its own cell instead of scanning all specks, and observe's speck search scans its cell window (same torus metric) instead of every speck. Behaviour is the same, except that ties between equally near specks may break differently.
+  - **Crash fixed (first run, ~t28):** `_execute_observe` read a freed speck. Specks spawn exactly on cell corners (`_cell_to_dir`), and the index computed the cell from the spawn direction while removal recomputed it from the speck's position; about 9% of specks round into a different cell between the two (measured: 1,858 of 20,000 on the 447 grid), so collected specks were stranded in the index. Fix: index by the cell of the speck's actual position, store it (`set_meta("cell")`), and remove by the stored cell.
+- **Expected look:** with 10 colonies on a world sized for 50, colonies look small with wide empty gaps, and first contact comes noticeably later than the playtest's t49.
+
+### 50-colony test field (Dustan: "the sphere still looks cramped at 50 — test it with 50 colonies, placed randomly")
+- `TEST_FIELD_COLONY_COUNT = WORLD_PLAYERS` (50). Colony i plays archetype `i % 10` from `TEST_FIELD_COLONIES` (5 of each); `_field_specs` / `_field_colors` are built in `_ready` by `_build_test_field`. Colonies 0–9 keep `COLONY_PALETTE`; 10–49 get golden-ratio hues (`hue###`). Autochant, the debug HUD, discrete colouring and the `field_colony` telemetry all read the runtime lists.
+- `TEST_FIELD_RANDOM_SPREAD = true`: founders land uniformly at random (`_random_founder_dir`, a normalised Gaussian vector), at least `TEST_FIELD_MIN_FOUNDER_CELLS` = 6 cells apart; `false` restores the Fibonacci lattice.
+- First 10-colony run on the scaled world (`1793119080`, 87 ticks): no contact yet by t87; 9 of 10 colonies at the 500 cap by ~t75.
+- **The crowding knob is density, not sphere size.** A bigger sphere with the camera pulled back looks identical to the finer grid; what sets how roomy it feels is area per colony, i.e. `WORLD_REFERENCE_COLONIES` (10 = the old field's density, which was itself crowded: colonies touched by t49 in the 10-23 playtest). Lowering it to 5 doubles the area per colony (`WORLD_SCALE` √10, grid 632). `MAX_POPULATION_PER_COLONY` (500) is the other lever.
+- **Perf:** a full field can reach 50 × 500 = 25k dots plus blocks, all individual nodes. Expect heavy stutter late in a run; judge crowding early.
+
+### Verify
+`validate_script` clean; scaled constants confirmed in the editor (GRID_RES 447, CELL_STEP 0.01406 vs block width 0.01386, so blocks still tile; specks 25/tick, cap 7500). **Not run in Godot by Claude.** Check: the colonies' size on the globe and the spacing between them; zooming in close; monuments still tiling; specks and gathering still working (soul still flows); and whether tick time got better or worse.
+
+### Agreed next: separate the simulation from the visuals (before clocks and growth)
+Dustan liked the 50-colony look. On how the world should grow with player count, the options were tiered resizing, one big sphere filled outward from placement, or a new world when one fills. Dustan leans toward tiered growth as most future-proof, but the decision is deferred until after the separation, because moving whole colonies (resizing without tearing monuments and walls apart) is far simpler once state is plain data. Placement and a per-world size are needed under any option.
+
+**Separation plan (each stage behaviour-preserving, validated, run by Dustan, own commit):**
+1. **Positions become data:** each dot/block/speck record stores its globe direction; the simulation reads that, not the mesh.
+2. **Integer IDs become the keys:** dot_data, grid, combat lists, perches, observations and specks keyed by id; an id → mesh table for drawing.
+3. **View layer:** the simulation stops creating, deleting and colouring nodes; it emits events (spawned, moved, died, recoloured) that a view applies.
+4. **Extract `world_sim.gd`:** state + tick in a node-free script; `main.gd` becomes the client (camera, UI, word cloud, sky/sun, view). The active/passive clocks get built here.
+5. **Batched drawing:** MultiMesh for dots, blocks, specks and marks.
+6. **Headless proof:** a server scene ticks `world_sim.gd` with no rendering and writes telemetry.
+Baseline for before/after telemetry comparison: the 50-colony run on the 447 grid. Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
