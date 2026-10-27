@@ -30,9 +30,24 @@ var tick_timer = 0.0
 
 const USE_SERVER = false
 const WordCloud = preload("res://word_cloud.gd")
-# entity id -> its MeshInstance3D (dots, blocks, specks, marks). Only the view section touches meshes;
-# the simulation addresses everything by id.
-var views = {}
+# Batched drawing (separation stage 5): one MultiMeshInstance3D per entity KIND instead of a mesh
+# node per entity — tens of thousands of nodes become five draws. Each kind keeps a dense array of
+# live entity ids, and an id's position in it is its instance slot; removal swaps the last
+# instance into the hole. Albedo is the instance colour, emission the instance custom data
+# (entity.gdshader). Sizes and glow match the per-entity meshes they replace; a mark's size varies
+# per instance, so its mesh is unit-sized in x/z and the instance basis scales it.
+const ENTITY_SHADER = preload("res://entity.gdshader")
+const VIEW_KINDS = {
+	"dot":   { "size": Vector3(0.015, 0.006, 0.015) / WorldSim.WORLD_SCALE, "energy": 0.8 },
+	"block": { "size": WorldSim.BLOCK_MESH_SIZE, "energy": 0.6 },
+	"wall":  { "size": WorldSim.WALL_MESH_SIZE, "energy": 0.6 },
+	"speck": { "size": Vector3(0.008, 0.003, 0.008) / WorldSim.WORLD_SCALE, "energy": 1.2 },
+	"mark":  { "size": Vector3(1.0, 0.001 / WorldSim.WORLD_SCALE, 1.0), "energy": 0.4 },
+}
+const VIEW_START_CAPACITY = 1024
+const SPECK_COLOR = Color(1.0, 0.85, 0.2)
+var _batches = {}   # kind -> { "mm": MultiMesh, "ids": Array of entity ids, by slot }
+var _slot_of = {}   # entity id -> [kind, slot]
 var word_cloud = null
 
 @onready var camera = $Camera3D
@@ -59,6 +74,7 @@ var single_touch_active = false
 var single_touch_index = -1
 
 func _ready():
+	_build_batches()
 	sim = WorldSim.new()
 	sim.setup()
 	_focus_on_colony()
@@ -172,116 +188,153 @@ func _colony_screen_point():
 		return null
 	return camera.unproject_position(p)
 
-# --- View: meshes follow the simulation's data (separation stages 3-4) ---
+# --- View: batched drawing of the simulation's data (separation stages 3-5) ---
+
+func _build_batches() -> void:
+	for kind in VIEW_KINDS:
+		var spec = VIEW_KINDS[kind]
+		var mm = MultiMesh.new()
+		# Formats must be set before instance_count.
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = true
+		mm.use_custom_data = true
+		var box = BoxMesh.new()
+		box.size = spec["size"]
+		mm.mesh = box
+		# Everything sits on or just above the unit globe; a fixed box spares recomputing the
+		# bounds from every instance on each change.
+		mm.custom_aabb = AABB(Vector3.ONE * -1.2, Vector3.ONE * 2.4)
+		mm.instance_count = VIEW_START_CAPACITY
+		mm.visible_instance_count = 0
+		var mat = ShaderMaterial.new()
+		mat.shader = ENTITY_SHADER
+		mat.set_shader_parameter("emission_energy", spec["energy"])
+		var node = MultiMeshInstance3D.new()
+		node.multimesh = mm
+		node.material_override = mat
+		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		add_child(node)
+		_batches[kind] = { "mm": mm, "ids": [] }
 
 func _sync_views() -> void:
-	# Apply what the simulation flagged since last frame: free the removed, build the new, then
+	# Apply what the simulation flagged since last frame: drop the removed, add the new, then
 	# move / recolour the flagged. Cheap when nothing changed.
 	var changes = sim.take_view_changes()
 	var dirty = changes[0]
 	var gone = changes[1]
 	for id in gone:
-		if views.has(id):
-			views[id].queue_free()
-			views.erase(id)
+		_view_drop(id)
 	for id in dirty:
 		var what = dirty[id]
-		if not views.has(id):
-			var mesh = _view_build(id)
-			if mesh == null:
+		if not _slot_of.has(id):
+			if not _view_add(id):
 				continue
-			views[id] = mesh
 			what = WorldSim.VIEW_PLACE | WorldSim.VIEW_COLOR
+		var mm = _batches[_slot_of[id][0]]["mm"]
+		var slot = _slot_of[id][1]
 		if what & WorldSim.VIEW_PLACE:
-			_view_place(id)
+			mm.set_instance_transform(slot, _entity_transform(id))
 		if what & WorldSim.VIEW_COLOR:
-			_view_color(id)
+			var c = _entity_colors(id)
+			mm.set_instance_color(slot, c[0])
+			mm.set_instance_custom_data(slot, c[1])
 
-func _view_build(id: int):
-	# A mesh for whatever kind of entity `id` is, or null if it no longer exists. Colour and
-	# placement are applied separately (_view_color, _view_place).
-	var size: Vector3
-	var energy: float
+func _entity_kind(id: int) -> String:
 	if sim.dot_data.has(id):
 		if sim.dot_data[id].get("is_wall", false):
-			size = WorldSim.WALL_MESH_SIZE
-			energy = 0.6
-		elif sim.dot_data[id].get("is_block", false):
-			size = WorldSim.BLOCK_MESH_SIZE
-			energy = 0.6
-		else:
-			size = Vector3(0.015, 0.006, 0.015) / WorldSim.WORLD_SCALE
-			energy = 0.8
-	elif sim.speck_data.has(id):
-		size = Vector3(0.008, 0.003, 0.008) / WorldSim.WORLD_SCALE
-		energy = 1.2
-	elif sim.mark_data.has(id):
-		var s = sim.mark_data[id]["size"]
-		size = Vector3(s, 0.001 / WorldSim.WORLD_SCALE, s)
-		energy = 0.4
-	else:
-		return null
-	var mesh = MeshInstance3D.new()
-	var box = BoxMesh.new()
-	box.size = size
-	mesh.mesh = box
-	var mat = StandardMaterial3D.new()
-	mat.emission_enabled = true
-	mat.emission_energy_multiplier = energy
-	mesh.material_override = mat
-	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	add_child(mesh)
-	return mesh
+			return "wall"
+		if sim.dot_data[id].get("is_block", false):
+			return "block"
+		return "dot"
+	if sim.speck_data.has(id):
+		return "speck"
+	if sim.mark_data.has(id):
+		return "mark"
+	return ""
 
-func _view_place(id: int) -> void:
-	var mesh = views[id]
+func _view_add(id: int) -> bool:
+	# Give a new entity the next slot in its kind's batch. False if it no longer exists.
+	var kind = _entity_kind(id)
+	if kind == "":
+		return false
+	var b = _batches[kind]
+	var mm = b["mm"]
+	var slot = b["ids"].size()
+	if slot >= mm.instance_count:
+		_grow_batch(mm)
+	b["ids"].append(id)
+	_slot_of[id] = [kind, slot]
+	mm.visible_instance_count = slot + 1
+	return true
+
+func _view_drop(id: int) -> void:
+	# Free an entity's slot by moving the batch's last instance into it.
+	if not _slot_of.has(id):
+		return
+	var kind = _slot_of[id][0]
+	var slot = _slot_of[id][1]
+	var b = _batches[kind]
+	var mm = b["mm"]
+	var last = b["ids"].size() - 1
+	if slot != last:
+		var moved = b["ids"][last]
+		mm.set_instance_transform(slot, mm.get_instance_transform(last))
+		mm.set_instance_color(slot, mm.get_instance_color(last))
+		mm.set_instance_custom_data(slot, mm.get_instance_custom_data(last))
+		b["ids"][slot] = moved
+		_slot_of[moved] = [kind, slot]
+	b["ids"].pop_back()
+	_slot_of.erase(id)
+	mm.visible_instance_count = last
+
+func _grow_batch(mm: MultiMesh) -> void:
+	# Double the capacity. Changing instance_count clears the instance data, so carry it across.
+	var data = mm.buffer
+	@warning_ignore("integer_division")
+	var stride = data.size() / mm.instance_count  # floats per instance (20: transform + colour + custom)
+	var shown = mm.visible_instance_count
+	mm.instance_count = mm.instance_count * 2
+	data.resize(mm.instance_count * stride)
+	mm.buffer = data
+	mm.visible_instance_count = shown
+
+func _entity_transform(id: int) -> Transform3D:
 	if sim.dot_data.has(id):
 		var d = sim.dot_data[id]
 		var dir = d["dir"]
 		if d.get("is_wall", false):
-			mesh.position = dir * (WorldSim.SPHERE_RADIUS + WorldSim.DOT_SURFACE_OFFSET)
-			mesh.transform.basis = _wall_basis(dir, d["threat_dir"])
-		elif d.get("is_block", false):
+			return Transform3D(_wall_basis(dir, d["threat_dir"]), dir * (WorldSim.SPHERE_RADIUS + WorldSim.DOT_SURFACE_OFFSET))
+		if d.get("is_block", false):
 			# Stacked along the surface normal, stack_index steps above the surface.
-			mesh.position = dir * (WorldSim.SPHERE_RADIUS + WorldSim.DOT_SURFACE_OFFSET + d["stack_index"] * WorldSim.BLOCK_HEIGHT_STEP)
-			mesh.transform.basis = _surface_basis(dir)
-		else:
-			# A perched waller sits one block-height up, on top of its wall segment.
-			var lift = WorldSim.BLOCK_HEIGHT_STEP if sim.wall_perch.has(id) else 0.0
-			mesh.position = dir * (WorldSim.SPHERE_RADIUS + WorldSim.DOT_SURFACE_OFFSET + lift)
-			mesh.transform.basis = _surface_basis(dir) if d.get("facing") == null else _facing_basis(dir, d["facing"])
-	elif sim.speck_data.has(id):
-		mesh.position = sim.speck_data[id]["dir"] * (WorldSim.SPHERE_RADIUS + WorldSim.DOT_SURFACE_OFFSET)
-	elif sim.mark_data.has(id):
-		var dir = sim.mark_data[id]["dir"]
-		# Straddle the surface rather than float above it: centred exactly ON the sphere, so the
-		# tile is half embedded and sits 0.0005 proud — it reads as paint, not as a tile hovering
-		# over the ground. (It previously sat at +0.00375, over 3x its own 0.001 thickness above
-		# the surface.) Marks are the one thing that must be IN the sphere, not on top of it, so
-		# they deliberately do not use DOT_SURFACE_OFFSET the way dots and blocks do.
-		# Curvature is negligible at this size: a 0.014 tile's corners rise ~5e-5 off the tangent
-		# plane, a tenth of the protrusion, so the whole quad stays seated.
-		mesh.position = dir * WorldSim.SPHERE_RADIUS
-		mesh.transform.basis = _surface_basis(dir)
+			return Transform3D(_surface_basis(dir), dir * (WorldSim.SPHERE_RADIUS + WorldSim.DOT_SURFACE_OFFSET + d["stack_index"] * WorldSim.BLOCK_HEIGHT_STEP))
+		# A perched waller sits one block-height up, on top of its wall segment.
+		var lift = WorldSim.BLOCK_HEIGHT_STEP if sim.wall_perch.has(id) else 0.0
+		var frame = _surface_basis(dir) if d.get("facing") == null else _facing_basis(dir, d["facing"])
+		return Transform3D(frame, dir * (WorldSim.SPHERE_RADIUS + WorldSim.DOT_SURFACE_OFFSET + lift))
+	if sim.speck_data.has(id):
+		return Transform3D(Basis(), sim.speck_data[id]["dir"] * (WorldSim.SPHERE_RADIUS + WorldSim.DOT_SURFACE_OFFSET))
+	var mark_dir = sim.mark_data[id]["dir"]
+	# Straddle the surface rather than float above it: centred exactly ON the sphere, so the
+	# tile is half embedded and sits 0.0005 proud — it reads as paint, not as a tile hovering
+	# over the ground. (It previously sat at +0.00375, over 3x its own 0.001 thickness above
+	# the surface.) Marks are the one thing that must be IN the sphere, not on top of it, so
+	# they deliberately do not use DOT_SURFACE_OFFSET the way dots and blocks do.
+	# Curvature is negligible at this size: a 0.014 tile's corners rise ~5e-5 off the tangent
+	# plane, a tenth of the protrusion, so the whole quad stays seated.
+	var b = _surface_basis(mark_dir)
+	var size = sim.mark_data[id]["size"]
+	b.x *= size
+	b.z *= size
+	return Transform3D(b, mark_dir * WorldSim.SPHERE_RADIUS)
 
-func _view_color(id: int) -> void:
-	var albedo: Color
-	var emission: Color
+func _entity_colors(id: int) -> Array:
+	# [albedo, emission] in sRGB.
 	if sim.dot_data.has(id):
-		var c = sim._dot_colors(id)
-		albedo = c[0]
-		emission = c[1]
-	elif sim.speck_data.has(id):
-		albedo = Color(1.0, 0.85, 0.2)
-		emission = albedo
-	elif sim.mark_data.has(id):
-		albedo = sim.mark_data[id]["color"]
-		emission = albedo
-	else:
-		return
-	var mat = views[id].material_override as StandardMaterial3D
-	mat.albedo_color = albedo
-	mat.emission = emission
+		return sim._dot_colors(id)
+	if sim.speck_data.has(id):
+		return [SPECK_COLOR, SPECK_COLOR]
+	var c = sim.mark_data[id]["color"]
+	return [c, c]
 
 func _surface_basis(dir: Vector3) -> Basis:
 	# y = the surface normal; x/z span the tangent plane against a fixed world reference axis.

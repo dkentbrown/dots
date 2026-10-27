@@ -2424,12 +2424,12 @@ Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open aga
 
 ---
 
-## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale, separation stages 1–4; stage 5 uncommitted on top.)
+## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Committed + pushed on branch, UNMERGED: world scale, separation stages 1–5.)
 
 Fresh session: read THIS entry, then the 2026-10-27 word-cloud entry and the 2026-10-23 entry above, `RECONCILIATION.md` (S.b update, CLIENT / UX), and the bible.
 
 ### Git
-PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–4 are committed + pushed; stage 5 is uncommitted on top.
+PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2026-10-27-world-scale`** off `main`. World scaling + 50-colony field (`81f2d16`) and separation stages 1–5 are committed + pushed. Stage 6 (headless proof) not started.
 
 ### Multiplayer decisions (Dustan) — RECONCILIATION S.b
 1. **Server-side authority** (bible §14). The server runs the whole simulation; clients render it and send chants. Bible §15.2's `/sync` (clients upload their own dots) is dropped: it contradicts §14, and offline colonies need a server simulation anyway.
@@ -2459,7 +2459,7 @@ PR **dkentbrown/dots#2 MERGED** into `main` (`fb15778`). New branch **`session/2
 ### Verify
 `validate_script` clean; scaled constants confirmed in the editor (GRID_RES 447, CELL_STEP 0.01406 vs block width 0.01386, so blocks still tile; specks 25/tick, cap 7500). **Not run in Godot by Claude.** Check: the colonies' size on the globe and the spacing between them; zooming in close; monuments still tiling; specks and gathering still working (soul still flows); and whether tick time got better or worse.
 
-### Agreed next: separate the simulation from the visuals (before clocks and growth) — stages 1–4 done
+### Agreed next: separate the simulation from the visuals (before clocks and growth) — stages 1–5 done
 Dustan liked the 50-colony look. On how the world should grow with player count, the options were tiered resizing, one big sphere filled outward from placement, or a new world when one fills. Dustan leans toward tiered growth as most future-proof, but the decision is deferred until after the separation, because moving whole colonies (resizing without tearing monuments and walls apart) is far simpler once state is plain data. Placement and a per-world size are needed under any option.
 
 **Separation plan (each stage behaviour-preserving, validated, run by Dustan, own commit):**
@@ -2521,4 +2521,15 @@ Baseline for before/after telemetry comparison: the 50-colony run on the 447 gri
   - Counts track all three earlier runs (t45 live / blocks / specks: 10,289 / 2,114 / 991). Combat 54 resolutions by t55; blending 38,666 contacts, 324 border births.
   - Behaviour mix t30–45 within about 3 points; move is a little higher (0.237), from movers colonies plus Dustan's move-leaning chants.
   - **Chant path through the sim works end to end:** three 5-word word-cloud casts (e.g. "procession hurricane verdant ancestor love") parsed fully and applied composed recipes to colony 0, and the HUD and cast flight read sim state without error.
-- **Follow-up (cosmetic, not done):** the client reaches some underscore members (`sim._tick_num`, `_field_specs`, `_cached_colony_centers`, `_pick_cloud_word`, `_process_chant_locally`, `_compute_colony_center`, `_dot_colors`). Give them public names when the server interface is designed (stage 6+). Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
+- **Follow-up (cosmetic, not done):** the client reaches some underscore members (`sim._tick_num`, `_field_specs`, `_cached_colony_centers`, `_pick_cloud_word`, `_process_chant_locally`, `_compute_colony_center`, `_dot_colors`). Give them public names when the server interface is designed (stage 6+).
+
+### Separation stage 5 — batched drawing
+- The client draws each entity **kind** (dot, block, wall, speck, mark) as **one `MultiMeshInstance3D`** instead of one `MeshInstance3D` + material per entity, so roughly 35k nodes at full load become 5 draws. `VIEW_KINDS` holds each kind's mesh size and glow (the same values as the old per-entity meshes). Marks use a unit-sized mesh scaled per instance, since their size varies.
+- **Slots:** each kind keeps a dense array of live ids (`_batches[kind]["ids"]`) and `_slot_of[id] = [kind, slot]`. `_view_add` takes the next slot (doubling capacity via `_grow_batch` when full, carrying the buffer across, since changing `instance_count` clears it). `_view_drop` swaps the last instance into the hole. `visible_instance_count` tracks the live count. A fixed `custom_aabb` around the globe spares recomputing bounds from every instance.
+- **Colour:** new **`entity.gdshader`**: albedo = instance colour, emission = instance custom data × `emission_energy`, both converted sRGB→linear in the shader (the StandardMaterial3D colours it replaces were converted by the engine). Fog keeps its separate dimmer emission via the custom data.
+- `_sync_views` now applies flags to instance slots (`set_instance_transform/color/custom_data`); `_entity_transform` and `_entity_colors` carry the old placement and colour maths unchanged. No per-entity nodes remain.
+- **Checked in the editor** (no game run): the shader parses; a scratch MultiMesh confirmed a stride of 20 floats per instance, exact swap-remove read-back, and that doubling capacity preserves instance data. `validate_script` clean.
+- **Run by Dustan, `1793125207`** (50 colonies, 65 ticks): **no runtime errors**; all 50 alive at t65.
+  - Counts and behaviour mix match stages 1–4 (t45 live / blocks / specks 11,293 / 2,403 / 966; mix within about 2 points). Combat 97 resolutions and 10 wall banners by t65. Three 5-word word-cloud chants fully matched.
+  - Three new warnings from the stage 5 code (locals `visible` and `basis` shadowing Node3D properties; `dir` declared twice in `_entity_transform`) were fixed by renaming them `shown`, `frame` and `mark_dir`.
+- **Perf finding:** tick throughput is about the same as before: 65 ticks in about 96 s (~1.5 s/tick at 18.7k dots + 5.6k blocks), against stage 3's 61 ticks in about 85 s (~1.4 s/tick at fewer blocks). Per-tick time is dominated by the **simulation** (GDScript over ~18k dots, once per second), not drawing, so batching cuts render and node-update cost but not the once-a-second stall. **Visuals confirmed by Dustan:** "Visuals looked right." **If the stall matters later:** the sim is now node-free, so `sim.tick()` could run on a worker thread (the client double-buffers the view changes), or the hot loops could move to compiled code. Not pursued: perf isn't a priority. Runs won't be bit-identical (RNG call order shifts), so compare population curves, primitive shares and blend counts.
