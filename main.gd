@@ -14,6 +14,22 @@ const PINCH_SPEED = 0.004
 const ZOOM_SMOOTH = 8.0
 const ROTATE_SPEED = 0.005
 
+# Auto-tilt (Google Earth style): zoomed in, the camera tips from straight down toward the horizon,
+# pivoting on the ground point at the centre of the screen, so monuments can be seen from the side.
+# Altitude = height over the ground (zoom_distance - SPHERE_RADIUS). No tilt at or above
+# TILT_START_ALTITUDE (about one or two colonies filling the screen); TILT_MAX_DEG at ZOOM_MIN.
+# Inside that range zoom steps shrink with altitude; drag speed shrinks below DRAG_FULL_ALTITUDE
+# (the default zoom of 3.0), so the ground keeps pace with the finger up close.
+const TILT_START_ALTITUDE = 0.6
+const TILT_MAX_DEG = 65.0
+const DRAG_FULL_ALTITUDE = 2.0
+# Godot's default near plane (0.05) would clip the ground in a tilted close-up.
+const CAMERA_NEAR = 0.002
+# Mac trackpad: pinch zooms (InputEventMagnifyGesture), two-finger scroll moves across the planet
+# like a drag (InputEventPanGesture; roughly trackpad points to screen pixels). Tune by feel.
+const MAGNIFY_SPEED = 1.0
+const PAN_GESTURE_SPEED = 30.0
+
 # Sun: the DirectionalLight3D orbits the globe on WALL-CLOCK time, so the day/night phase carries
 # across sessions (and, later, players) instead of resetting at launch. One revolution per
 # SUN_DAY_SECONDS; SUN_FAST_DAY swaps in a SUN_TEST_DAY_SECONDS day for testing. The sun rides
@@ -77,11 +93,13 @@ func _ready():
 	_build_batches()
 	sim = WorldSim.new()
 	sim.setup()
+	camera.near = CAMERA_NEAR
 	_focus_on_colony()
 	_update_camera()
 	_update_hud()
 	dev_bar.placeholder_text = "dev chant..."
 	dev_bar.text_submitted.connect(_on_dev_chant)
+	zoom_slider.min_value = ZOOM_MIN
 	zoom_slider.value = zoom_target
 	zoom_slider.value_changed.connect(_on_zoom_slider_changed)
 	_set_debug_ui(_debug_ui)
@@ -405,13 +423,21 @@ func _focus_on_colony():
 func _orbit(relative: Vector2) -> void:
 	# Drag rotates about the camera's local up (horizontal drag) and local right (vertical
 	# drag). Same drag directions as the old yaw/pitch orbit; orthonormalized against drift.
-	var yaw = Basis(Vector3.UP, -relative.x * ROTATE_SPEED)
-	var pitch = Basis(Vector3.RIGHT, -relative.y * ROTATE_SPEED)
+	# Slower below DRAG_FULL_ALTITUDE, in proportion to altitude.
+	var speed = ROTATE_SPEED * min((zoom_distance - WorldSim.SPHERE_RADIUS) / DRAG_FULL_ALTITUDE, 1.0)
+	var yaw = Basis(Vector3.UP, -relative.x * speed)
+	var pitch = Basis(Vector3.RIGHT, -relative.y * speed)
 	orbit_basis = (orbit_basis * yaw * pitch).orthonormalized()
 
 func _update_camera():
-	camera.transform.basis = orbit_basis
-	camera.position = orbit_basis.z * zoom_distance
+	# The camera looks at the ground point on orbit_basis.z and, below TILT_START_ALTITUDE, tips
+	# toward the top of the screen about its own right axis, pivoting on that point, so the
+	# horizon stays level. At zero tilt this is the old view: on orbit_basis.z at zoom_distance,
+	# looking at the globe's centre.
+	var altitude = zoom_distance - WorldSim.SPHERE_RADIUS
+	var tilt = deg_to_rad(TILT_MAX_DEG) * (1.0 - smoothstep(ZOOM_MIN - WorldSim.SPHERE_RADIUS, TILT_START_ALTITUDE, altitude))
+	camera.transform.basis = orbit_basis * Basis(Vector3.RIGHT, tilt)
+	camera.position = orbit_basis.z * WorldSim.SPHERE_RADIUS + camera.transform.basis.z * altitude
 
 func _update_sun() -> void:
 	var day = SUN_TEST_DAY_SECONDS if SUN_FAST_DAY else SUN_DAY_SECONDS
@@ -441,6 +467,12 @@ func _input(event):
 
 	if event is InputEventMouseMotion and is_orbiting:
 		_orbit(event.relative)
+
+	# Mac trackpad gestures. If a direction feels reversed, flip its sign.
+	if event is InputEventMagnifyGesture:
+		_zoom((1.0 - event.factor) * MAGNIFY_SPEED)
+	if event is InputEventPanGesture:
+		_orbit(-event.delta * PAN_GESTURE_SPEED)
 
 	if event is InputEventScreenTouch:
 		if event.pressed:
@@ -472,7 +504,10 @@ func _input(event):
 			pinch_last_distance = current_dist
 
 func _zoom(delta: float):
-	zoom_target = clamp(zoom_target + delta, ZOOM_MIN, ZOOM_MAX)
+	# Inside the tilt range a step shrinks in proportion to altitude, so the last stretch to the
+	# ground takes several notches instead of one. The slider sets zoom directly.
+	var fine = min((zoom_target - WorldSim.SPHERE_RADIUS) / TILT_START_ALTITUDE, 1.0)
+	zoom_target = clamp(zoom_target + delta * fine, ZOOM_MIN, ZOOM_MAX)
 	if zoom_slider:
 		zoom_slider.set_value_no_signal(zoom_target)
 
