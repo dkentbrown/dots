@@ -36,6 +36,8 @@ const PAN_GESTURE_SPEED = 30.0
 # SUN_DECLINATION_DEG above the equator (Earth's tilt — a solstice day). That also puts it just
 # clear of the globe's limb (asin(1/3) ≈ 19.5° at the default zoom of 3.0) when you look at the
 # night side, so it can be seen behind the planet. Purely visual — the simulation ignores it.
+# The star field turns with the sun (space_sky.gdshader `sky_turn`), so the sun keeps its place
+# among the stars and the whole sky wheels once per day, as seen from a spinning planet.
 const SUN_DAY_SECONDS = 86400.0
 const SUN_TEST_DAY_SECONDS = 20.0
 const SUN_FAST_DAY = true
@@ -68,6 +70,7 @@ var word_cloud = null
 
 @onready var camera = $Camera3D
 @onready var sun = $DirectionalLight3D
+@onready var sky_material = $WorldEnvironment.environment.sky.sky_material
 @onready var dev_bar = $UI/DevBar
 @onready var hud = $UI/HUD
 @onready var zoom_slider = $UI/ZoomSlider
@@ -446,6 +449,8 @@ func _update_sun() -> void:
 	var to_sun = Vector3(cos(decl) * sin(phase), sin(decl), cos(decl) * cos(phase))
 	# A DirectionalLight3D shines along its -Z, so aim -Z from the sun toward the globe.
 	sun.transform.basis = Basis.looking_at(-to_sun, Vector3.UP)
+	# to_sun is the declination point turned by `phase` about +Y; turn the star field by the same.
+	sky_material.set_shader_parameter("sky_turn", phase)
 
 # --- Input ---
 

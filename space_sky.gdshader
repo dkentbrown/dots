@@ -3,6 +3,9 @@ shader_type sky;
 // Ambient deep-space backdrop: a near-black base, faint nebula patches, a soft "galactic" band
 // and two layers of procedural stars, plus a sun disk drawn wherever the scene's directional
 // light is (LIGHT0). No TIME: the backdrop only changes as the camera orbits and the sun moves.
+// The star field (stars, nebula, band) turns with the sun about the planet's axis (`sky_turn`,
+// set by main.gd from the sun's day phase), so the sun keeps its place among the stars and the
+// whole sky wheels once per day, as seen from a spinning planet.
 // Everything is a function of view direction only, so zoom never changes it. The globe is
 // drawn over the sky, so it eclipses the sun whenever the sun is behind it.
 
@@ -16,6 +19,7 @@ uniform vec3 band_axis = vec3(0.35, 0.9, 0.25);
 uniform vec3 sun_color : source_color = vec3(1.0, 0.93, 0.8);
 uniform float sun_radius : hint_range(0.0, 0.2) = 0.025;  // angular radius, radians (~1.4°)
 uniform float sun_glow : hint_range(0.0, 2.0) = 0.6;
+uniform float sky_turn = 0.0;  // radians the star field has turned about +Y (the sun's day phase)
 
 float hash13(vec3 p) {
 	p = fract(p * 0.1031);
@@ -75,14 +79,19 @@ vec3 star_layer(vec3 dir, float scale, float density, float radius) {
 
 void sky() {
 	vec3 dir = normalize(EYEDIR);
-	float band = exp(-pow(dot(dir, normalize(band_axis)) * 3.5, 2.0));
-	float clouds = fbm(dir * 2.4);
-	float patches = smoothstep(0.42, 0.78, fbm(dir * 1.3 + vec3(5.2, 1.3, 7.7)));
-	vec3 nebula = mix(nebula_a, nebula_b, fbm(dir * 3.1 + vec3(11.0)));
+	// The star field's own direction: undo its turn about +Y. The sun uses `dir` (LIGHT0 already
+	// carries the same turn), so the two move together.
+	float c = cos(sky_turn);
+	float s = sin(sky_turn);
+	vec3 sdir = vec3(c * dir.x - s * dir.z, dir.y, s * dir.x + c * dir.z);
+	float band = exp(-pow(dot(sdir, normalize(band_axis)) * 3.5, 2.0));
+	float clouds = fbm(sdir * 2.4);
+	float patches = smoothstep(0.42, 0.78, fbm(sdir * 1.3 + vec3(5.2, 1.3, 7.7)));
+	vec3 nebula = mix(nebula_a, nebula_b, fbm(sdir * 3.1 + vec3(11.0)));
 	vec3 col = space_color;
 	col += nebula * clouds * (patches + 0.5 * band) * nebula_strength;
-	col += star_layer(dir, 140.0, star_density * (0.5 + band), 0.16) * 0.6 * star_brightness;
-	col += star_layer(dir, 55.0, star_density * 0.08, 0.13) * star_brightness;
+	col += star_layer(sdir, 140.0, star_density * (0.5 + band), 0.16) * 0.6 * star_brightness;
+	col += star_layer(sdir, 55.0, star_density * 0.08, 0.13) * star_brightness;
 	if (LIGHT0_ENABLED) {
 		// LIGHT0_DIRECTION points toward the light. A hard-edged disk plus a tight and a wide glow.
 		float ang = acos(clamp(dot(dir, LIGHT0_DIRECTION), -1.0, 1.0));
