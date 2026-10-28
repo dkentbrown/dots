@@ -263,6 +263,28 @@ const TEST_FIELD_COLONIES = [
 		"lean": { "motion": { "move": LEAN }, "action": { "reproduce": LEAN, "observe": LEAN * 0.5 } }
 	}
 ]
+
+# A/B/C triad (trust edge case, 2026-10-28). TEST_FIELD_SCENARIO = "triad" replaces the field
+# with three colonies: A (colony 0, yours) and B, peaceful neighbours founded TRIAD_B_CELLS
+# apart so they blend and build trust from the start, and C, an aggressor founded TRIAD_C_CELLS
+# from A on the far side, chanting attack + confront from t0. When C first attacks A or B, both
+# answer with TRIAD_WAR_CASTS full-strength war chants (each one cast of "war war war war war").
+# That war must land on C, not on each other. Chant more war as A from the word cloud to test
+# betrayal: an old friend becomes a target once attack passes trust x BETRAYAL_ATTACK.
+# "" restores the 50-colony field.
+const TEST_FIELD_SCENARIO = ""
+const TRIAD_B_CELLS = 6
+const TRIAD_C_CELLS = 16
+const TRIAD_WAR_CASTS = 2
+const TRIAD_PALETTE = [0, 6, 2]   # COLONY_PALETTE indices: A red, B blue, C yellow (red and orange blocks look alike darkened)
+const TRIAD_WAR_CHANT = { "action": { "attack": CHANT_MAX_WEIGHT }, "dials": { "intensity": CHANT_MAX_DIAL } }
+const TRIAD_COLONIES = [
+	{ "name": "peaceful A", "war_response": true, "start": { "action": { "gather": 0.35, "observe": 0.20 } }, "lean": { "action": { "gather": LEAN, "observe": LEAN * 0.5 } } },
+	{ "name": "peaceful B", "war_response": true, "start": { "motion": { "move": 0.30 }, "modes": { "cohesion": 0.35 } }, "lean": { "modes": { "cohesion": LEAN } } },
+	{ "name": "aggressor C", "aggressor": true, "start": { "motion": { "move": 0.30 }, "modes": { "confront": 0.35 }, "action": { "attack": 0.35, "observe": 0.20 } }, "lean": { "modes": { "confront": LEAN }, "action": { "attack": LEAN, "observe": LEAN * 0.5 } } },
+]
+var _triad_war_tick = -1   # world tick C first attacked; -1 until then
+var _triad_war_cast = false
 # Logging \u2014 independent of TEST_MODE so we can log organic runs too
 const LOG_ENABLED = true
 const LOG_FILE = "res://build_log.txt"
@@ -288,6 +310,27 @@ var colony_period = {}   # colony -> world ticks per colony tick (1 active, PASS
 var _colony_wait = {}    # colony -> world ticks until its clock next fires
 var colony_ticks = {}    # colony -> colony ticks elapsed: the colony's own clock
 var _due = {}            # colony -> true when its clock fires on the current world tick
+
+# --- Trust between colonies ---------------------------------------------------------------
+# Each colony remembers, from its own side, how far it trusts every colony it has met: 0 a
+# stranger, 1 an old friend. Peaceful contact builds it (blending finds the touching pairs, on
+# the world clock); it fades on the trusting colony's own clock; being attacked wipes the
+# victim's trust in the attacker. A dot targets a colony (attack, walls, confront) only when its
+# attack weight is at least trust x BETRAYAL_ATTACK, so war chants land on strangers and
+# attackers, and turning on an old friend takes sustained war chanting (one chant adds at most
+# CHANT_MAX_WEIGHT attack). With these values, about 50 ticks side by side makes a friend
+# (trust ~0.7); constant contact settles near 0.86.
+const TRUST_GAIN = 0.03             # per world tick of peaceful contact, scaled by (1 - trust)
+const TRUST_DECAY = 0.005           # fraction lost per colony tick of the trusting colony
+const TRUST_PEACE_TICKS = 30        # world ticks after a fight between two colonies before contact builds trust again
+const BETRAYAL_ATTACK = 0.8         # attack weight a dot needs to target a fully trusted colony
+# Allies: colonies trusted at ALLY_TRUST or more (about 25 ticks side by side). Their rally
+# banners draw this colony's idle attackers to their fights, and their build banners take this
+# colony's builders, who add blocks in their own colony's colour (shared monuments).
+const ALLY_TRUST = 0.5
+const TRUST_SNAPSHOT_INTERVAL = 10  # world ticks between "trust" telemetry records
+var trust = {}          # colony -> { other colony -> 0..1 }: the first colony's view
+var _last_fight = {}    # Vector2i(lower colony, higher colony) -> world tick of their latest fight
 
 # Tuning constants (formerly magic numbers)
 const SPAWN_NUDGE = 0.018 / WORLD_SCALE
@@ -803,6 +846,7 @@ func tick() -> void:
 	# Soul decay runs AFTER _tick_all_dots so this tick's gathering is credited before
 	# erosion applies (see SOUL_DECAY_RATE).
 	_tick_soul_decay()
+	_tick_trust_decay()
 	# Post-tick state snapshot (after all mutations resolve). Captures ALL colonies.
 	if _tick_num % TELEMETRY_SNAPSHOT_INTERVAL == 0:
 		_telemetry({
@@ -823,6 +867,14 @@ func tick() -> void:
 			"passive": colony_period.keys().filter(func(c): return colony_period[c] > 1)
 		})
 		_blend_counts.clear()
+	# Trust record: every pair at 0.1 or more, keyed "truster>trusted".
+	if _tick_num % TRUST_SNAPSHOT_INTERVAL == 0:
+		var pairs = {}
+		for c in trust:
+			for other in trust[c]:
+				if trust[c][other] >= 0.1:
+					pairs["%d>%d" % [c, other]] = snappedf(trust[c][other], 0.01)
+		_telemetry({ "type": "trust", "tick": _tick_num, "pairs": pairs })
 
 func set_colony_active(colony: int, active: bool) -> void:
 	# Presence (bible §15.3 /session): the owner has the game open (active) or not (passive).
@@ -978,6 +1030,7 @@ func _tick_blending() -> void:
 			living[cell] = []
 		living[cell].append(dot)
 	var touched = {}
+	var contact_pairs = {}  # Vector2i(lower colony, higher colony) -> true: touched this tick (trust)
 	for key in living:
 		var here = living[key]
 		for du in range(-BLEND_RADIUS, BLEND_RADIUS + 1):
@@ -1006,12 +1059,50 @@ func _tick_blending() -> void:
 						elif cb == LOCAL_COLONY:
 							_local_contacts[ca] = _tick_num
 						_blend_pair(dot_data[a]["cce"], dot_data[b]["cce"], BLEND_RATE)
+						contact_pairs[Vector2i(min(ca, cb), max(ca, cb))] = true
 						touched[a] = true
 						touched[b] = true
 						_tally_blend(ca, "contacts")
 						_tally_blend(cb, "contacts")
 	for dot in touched:
 		_update_dot_color(dot)
+	# Trust: each pair of colonies that touched gains once per tick, however long the border,
+	# unless they fought within TRUST_PEACE_TICKS (culture still blends in war; trust doesn't grow).
+	for pair in contact_pairs:
+		if _last_fight.has(pair) and _tick_num - _last_fight[pair] <= TRUST_PEACE_TICKS:
+			continue
+		_gain_trust(pair.x, pair.y)
+		_gain_trust(pair.y, pair.x)
+
+func _trust(colony: int, other: int) -> float:
+	# How far `colony` trusts `other`: 0 for a stranger (see the trust block at the top).
+	return trust[colony].get(other, 0.0) if trust.has(colony) else 0.0
+
+func _gain_trust(colony: int, other: int) -> void:
+	if not trust.has(colony):
+		trust[colony] = {}
+	var t = trust[colony].get(other, 0.0)
+	trust[colony][other] = t + (1.0 - t) * TRUST_GAIN
+
+func _tick_trust_decay() -> void:
+	# Colony clock: trust is the colony's own memory, so it fades on that colony's ticks.
+	for c in trust:
+		if not _due.has(c):
+			continue
+		var row = trust[c]
+		for other in row.keys():
+			row[other] *= 1.0 - TRUST_DECAY
+			if row[other] < 0.001:
+				row.erase(other)
+
+func _is_ally(colony: int, other: int) -> bool:
+	# A colony counts as its own ally, so same-colony banners pass unchanged.
+	return other == colony or _trust(colony, other) >= ALLY_TRUST
+
+func _will_target(colony: int, other: int, attack_weight: float) -> bool:
+	# Trust gate on targeting: a dot picks a colony as its enemy only when its aggression
+	# outweighs its colony's trust in them. Strangers (trust 0) always qualify.
+	return attack_weight >= _trust(colony, other) * BETRAYAL_ATTACK
 
 func _blend_pair(a: Dictionary, b: Dictionary, rate: float) -> void:
 	# Both CCEs step toward each other from their pre-exchange values: the pair's sum is
@@ -1084,6 +1175,14 @@ func _tick_autochant() -> void:
 	# 10x less often in real time but the same amount per generation.
 	if not TEST_FIELD:
 		return
+	if _triad_war_tick >= 0 and not _triad_war_cast:
+		# Triad: the peaceful pair answers the aggressor's first attack with war chants, once,
+		# applied at once like a player's chant (not on the colony clock).
+		_triad_war_cast = true
+		for i in range(_field_specs.size()):
+			if _field_specs[i].get("war_response", false) and colony_counts.get(i, 0) > 0:
+				for _k in range(TRIAD_WAR_CASTS):
+					_apply_recipe(TRIAD_WAR_CHANT, i)
 	for i in range(_field_specs.size()):
 		if not _due.has(i) or colony_ticks[i] % AUTOCHANT_INTERVAL != 0:
 			continue
@@ -1447,7 +1546,7 @@ func _execute_primitive(dot: int, primitive: String, dials: Dictionary):
 					# Semantic shift from the old orientation-only face_target: as a MOVE mode a
 					# fire means movement, so confront closes distance rather than just turning.
 					var radius3 = int(lerp(float(FACE_SCAN_RADIUS_MIN), float(FACE_SCAN_RADIUS_MAX), range_val))
-					var tgt = _find_nearest_foreign_in_radius(dir, my_colony, radius3)
+					var tgt = _find_nearest_foreign_in_radius(dir, my_colony, radius3, dot_data[dot]["cce"]["action"].get("attack", 0.0))
 					if tgt != null and dot_data.has(tgt):
 						_face_dir(dot, _dir_of(tgt))
 						_march_toward_dir(dot, dir, _dir_of(tgt), my_colony)
@@ -1611,7 +1710,17 @@ func _initiate_combat(attacker: int, defender: int, intensity: float):
 	var attacker_pending = dot_data[attacker]["pending_observe"]
 	if attacker_pending != null and attacker_pending["enemy"] != null and attacker_pending["enemy"].has("observed_tick"):
 		observe_age = _tick_num - attacker_pending["enemy"]["observed_tick"]
-	_telemetry({ "type": "combat_init", "tick": _tick_num, "attacker_colony": dot_data[attacker]["colony"], "defender_colony": dot_data[defender]["colony"], "cell": [contact_cell.x, contact_cell.y], "intensity": intensity, "observe_age": observe_age })
+	# Trust: the fight pauses trust-building between the two colonies, and the victim stops
+	# trusting the attacker at once, so a betrayed friend fights back. "trust" in the record is
+	# the attacker's trust in the defender before the attack: above 0 means a betrayal.
+	var a_colony = dot_data[attacker]["colony"]
+	var d_colony = dot_data[defender]["colony"]
+	var attacker_trust = _trust(a_colony, d_colony)
+	_last_fight[Vector2i(min(a_colony, d_colony), max(a_colony, d_colony))] = _tick_num
+	if trust.has(d_colony):
+		trust[d_colony].erase(a_colony)
+	_note_triad_war(a_colony)
+	_telemetry({ "type": "combat_init", "tick": _tick_num, "attacker_colony": a_colony, "defender_colony": d_colony, "cell": [contact_cell.x, contact_cell.y], "intensity": intensity, "observe_age": observe_age, "trust": snappedf(attacker_trust, 0.01) })
 
 func _march_toward(dot: int, my_dir: Vector3, target: int, my_colony: int):
 	var target_dir = _dir_of(target)
@@ -1688,7 +1797,7 @@ func _execute_build(dot: int):
 		var banner_cell = nearest_banner["cell"]
 		if _is_at_or_adjacent(my_cell, banner_cell):
 			# At the monument \u2014 stack pref decays with current tower height, floored at STACK_HEIGHT_FACTOR_FLOOR by STACK_HEIGHT_SOFTCAP
-			var current_height = _count_blocks_in_cell(banner_cell, my_colony)
+			var current_height = _cell_height(banner_cell)
 			var height_factor = clamp(1.0 - float(current_height) / float(STACK_HEIGHT_SOFTCAP), STACK_HEIGHT_FACTOR_FLOOR, 1.0)
 			var stack_pref = BUILD_AT_BANNER_STACK_PREF * height_factor
 			var stacking = randf() < stack_pref
@@ -1698,7 +1807,7 @@ func _execute_build(dot: int):
 			# non-stack roll -- that decorative roll was the unbounded-tower bug. Shed it to a
 			# weighted-lowest ring neighbour so tall centres dome outward and each receiving
 			# ring cell is height-discouraged by its own stack count. An off-cell builder
-			# (my_cell != banner_cell) gates on my_cell's OWN same-colony height (same floored
+			# (my_cell != banner_cell) gates on my_cell's OWN height (same floored
 			# factor as the banner's); on a failed roll it sheds to a weighted-lowest neighbour
 			# of my_cell, contained near the banner or, with SHED_ESCAPE_CHANCE, escaping that
 			# containment to fray the edge. There is no ungated self fallback: the shed target
@@ -1709,10 +1818,10 @@ func _execute_build(dot: int):
 				build_cell = banner_cell
 				reason_str = "stack"
 			elif my_cell == banner_cell:
-				build_cell = _pick_lateral_cell(banner_cell, my_colony)
+				build_cell = _pick_lateral_cell(banner_cell)
 				reason_str = "lateral"
 			else:
-				var my_height = _count_blocks_in_cell(my_cell, my_colony)
+				var my_height = _cell_height(my_cell)
 				var my_height_factor = clamp(1.0 - float(my_height) / float(STACK_HEIGHT_SOFTCAP), STACK_HEIGHT_FACTOR_FLOOR, 1.0)
 				if randf() < my_height_factor:
 					build_cell = my_cell
@@ -1725,7 +1834,7 @@ func _execute_build(dot: int):
 					# (weight = 1/(1+height)); there is no ungated my_cell fallback. If containment leaves no
 					# candidate (degenerate geometry only), skip the build rather than place ungated.
 					var contained = randf() >= SHED_ESCAPE_CHANCE
-					var shed_cell = _pick_lateral_cell(my_cell, my_colony, banner_cell, contained)
+					var shed_cell = _pick_lateral_cell(my_cell, banner_cell, contained)
 					if shed_cell.x < 0:
 						return
 					build_cell = shed_cell
@@ -1735,6 +1844,9 @@ func _execute_build(dot: int):
 			if combat_locked_cells.get(build_cell, 0) > 0:
 				return
 			_create_block(build_cell, my_colony, dot_data[dot]["dot_id"], reason_str)
+			if nearest_banner["colony"] != my_colony:
+				# Shared monument: an ally's block, counted against the host banner's cap below.
+				_telemetry({ "type": "ally_block", "tick": _tick_num, "colony": my_colony, "host": nearest_banner["colony"], "cell": [build_cell.x, build_cell.y] })
 			# Mark this banner used BY THIS DOT so it won't feed the same one again — the dot
 			# moves on to another banner, founds its own, or does something else next build roll.
 			dot_data[dot]["build_banners_used"][nearest_banner["id"]] = true
@@ -1759,7 +1871,7 @@ func _execute_build(dot: int):
 	# Don't re-found on a cell already at/above the softcap height. A completed monument
 	# re-founded with a fresh block budget is the remaining route to an unbounded cell;
 	# guard it with the same receiving-cell height notion used by the stack gate.
-	if _count_blocks_in_cell(my_cell, my_colony) >= STACK_HEIGHT_SOFTCAP:
+	if _cell_height(my_cell) >= STACK_HEIGHT_SOFTCAP:
 		return
 	_create_block(my_cell, my_colony, dot_data[dot]["dot_id"], "founder")
 	_drop_build_banner(my_cell, my_colony)
@@ -1773,9 +1885,9 @@ func _execute_observe(dot: int) -> void:
 	var my_cell = _cell_key(my_dir)
 	var my_colony = dot_data[dot]["colony"]
 
-	# Enemy: nearest foreign dot
+	# Enemy: nearest foreign dot this dot would target (trusted colonies skipped, see _will_target)
 	var enemy_entry = null
-	var enemy = _find_nearest_foreign_in_radius(my_dir, my_colony, radius)
+	var enemy = _find_nearest_foreign_in_radius(my_dir, my_colony, radius, dot_data[dot]["cce"]["action"].get("attack", 0.0))
 	if enemy != null:
 		enemy_entry = { "pos": _dir_of(enemy), "dot": enemy, "observed_tick": _tick_num }
 
@@ -1840,7 +1952,8 @@ func _find_eligible_build_banner(dot: int, my_cell: Vector2i, my_colony: int):
 	var best = null
 	var best_dist = BUILD_BANNER_RADIUS * BUILD_BANNER_RADIUS + 1
 	for banner in build_banners:
-		if banner["colony"] != my_colony:
+		# Own or an ally's monument (see ALLY_TRUST): a helper adds blocks of its own colony.
+		if not _is_ally(my_colony, banner["colony"]):
 			continue
 		# Load-bearing (not routine filtering): a banner marked expired mid-tick because
 		# its block_cap was hit must be invisible to lookup for the rest of the tick, or
@@ -1858,9 +1971,9 @@ func _find_eligible_build_banner(dot: int, my_cell: Vector2i, my_colony: int):
 # Now live: the height-gated lateral redirect for tall monuments calls this (was retained
 # dead code, DEVNOTES 2026-05-12). Still the only place in this file that wraps grid
 # neighbors correctly with (+ GRID_RES) before the modulo -- keep that seam-wrap idiom.
-func _pick_lateral_cell(center_cell: Vector2i, colony: int, banner_cell: Vector2i = Vector2i(-1, -1), contained: bool = false) -> Vector2i:
-	# Returns one of center_cell's 8 ring neighbours, weighted toward LOWER same-colony
-	# stacks so the footprint domes up together. Weight = 1 / (1 + height): a bare cell
+func _pick_lateral_cell(center_cell: Vector2i, banner_cell: Vector2i = Vector2i(-1, -1), contained: bool = false) -> Vector2i:
+	# Returns one of center_cell's 8 ring neighbours, weighted toward LOWER stacks (every
+	# colony's blocks, see _cell_height) so the footprint domes up together. Weight = 1 / (1 + height): a bare cell
 	# (height 0) weighs 1.0 and taller cells weigh progressively less but never zero, so a
 	# taller cell is occasionally still chosen and the tops stay organic rather than a
 	# perfectly smooth dome. Scope stays the 8-ring (footprint is not widened).
@@ -1880,7 +1993,7 @@ func _pick_lateral_cell(center_cell: Vector2i, colony: int, banner_cell: Vector2
 			var nb = Vector2i((center_cell.x + du + GRID_RES) % GRID_RES, (center_cell.y + dv + GRID_RES) % GRID_RES)
 			if contained and _torus_cell_dist_sq(nb, banner_cell) > SHED_CONTAINMENT_DIST_SQ:
 				continue
-			var w = 1.0 / (1.0 + float(_count_blocks_in_cell(nb, colony)))
+			var w = 1.0 / (1.0 + float(_cell_height(nb)))
 			neighbors.append(nb)
 			weights.append(w)
 			total += w
@@ -1898,6 +2011,17 @@ func _count_blocks_in_cell(cell: Vector2i, colony: int) -> int:
 	if spatial_grid.has(cell):
 		for occupant in spatial_grid[cell]:
 			if dot_data.has(occupant) and dot_data[occupant].get("is_block", false) and dot_data[occupant]["colony"] == colony:
+				n += 1
+	return n
+
+func _cell_height(cell: Vector2i) -> int:
+	# Blocks of EVERY colony in the cell: the height the monument gates read. It matches how
+	# _create_block stacks them, so an ally helping on a shared monument sees the real height
+	# (a same-colony count would show it an empty cell and grow an unbounded tower).
+	var n = 0
+	if spatial_grid.has(cell):
+		for occupant in spatial_grid[cell]:
+			if dot_data.has(occupant) and dot_data[occupant].get("is_block", false):
 				n += 1
 	return n
 
@@ -2155,7 +2279,8 @@ func _march_toward_rally_banner(dot: int, my_dir: Vector3, my_colony: int):
 	var best = null
 	var best_dist = RALLY_RADIUS * RALLY_RADIUS + 1
 	for banner in rally_banners:
-		if banner["colony"] != my_colony:
+		# Own or an ally's fight: an attacker with no target joins a friend's front (see ALLY_TRUST).
+		if not _is_ally(my_colony, banner["colony"]):
 			continue
 		var d = _torus_cell_dist_sq(my_cell, banner["cell"])
 		if d < best_dist:
@@ -2533,7 +2658,9 @@ func _is_blocked_by_foreign(dir: Vector3, my_colony: int) -> bool:
 						return true
 	return false
 
-func _find_nearest_foreign_in_radius(dir: Vector3, my_colony: int, radius: int):
+func _find_nearest_foreign_in_radius(dir: Vector3, my_colony: int, radius: int, attack_weight: float):
+	# Nearest foreign dot or block this dot would target: colonies its colony trusts beyond its
+	# aggression are skipped (_will_target). Feeds observe's enemy (attack, walls) and confront.
 	var key = _cell_key(dir)
 	var best = null
 	var best_dist = INF
@@ -2547,6 +2674,8 @@ func _find_nearest_foreign_in_radius(dir: Vector3, my_colony: int, radius: int):
 			if spatial_grid.has(neighbor):
 				for occupant in spatial_grid[neighbor]:
 					if dot_data.has(occupant) and dot_data[occupant]["colony"] != my_colony:
+						if not _will_target(my_colony, dot_data[occupant]["colony"], attack_weight):
+							continue
 						var occ_key = dot_cell.get(occupant, _cell_key(_dir_of(occupant)))
 						# Box (non-wrapping) distance metric, an accepted choice here;
 						# torus-wrapped distance is used elsewhere (_torus_cell_dist_sq).
@@ -2682,11 +2811,14 @@ func _make_field_cce(spec: Dictionary) -> Dictionary:
 	return cce
 
 func _build_test_field() -> void:
-	# Per-colony archetype and colour for TEST_FIELD_COLONY_COUNT colonies. Built even when
-	# TEST_FIELD is off, because the discrete-colour overlay reads _field_colors either way.
-	for i in range(TEST_FIELD_COLONY_COUNT):
-		_field_specs.append(TEST_FIELD_COLONIES[i % TEST_FIELD_COLONIES.size()])
-		if i < COLONY_PALETTE.size():
+	# Per-colony archetype and colour for TEST_FIELD_COLONY_COUNT colonies (or the triad's three).
+	# Built even when TEST_FIELD is off, because the discrete-colour overlay reads _field_colors.
+	var triad = TEST_FIELD_SCENARIO == "triad"
+	for i in range(TRIAD_COLONIES.size() if triad else TEST_FIELD_COLONY_COUNT):
+		_field_specs.append(TRIAD_COLONIES[i] if triad else TEST_FIELD_COLONIES[i % TEST_FIELD_COLONIES.size()])
+		if triad:
+			_field_colors.append(COLONY_PALETTE[TRIAD_PALETTE[i]])
+		elif i < COLONY_PALETTE.size():
 			_field_colors.append(COLONY_PALETTE[i])
 		else:
 			# Golden-ratio hue steps keep successive colonies as far apart in hue as possible.
@@ -2710,6 +2842,24 @@ func _random_founder_dir(placed: Array) -> Vector3:
 			break
 	return dir
 
+func _triad_founder_dirs() -> Array:
+	# A at a random point; B TRIAD_B_CELLS one way along a great circle, C TRIAD_C_CELLS the other.
+	var a = Vector3(randfn(0.0, 1.0), randfn(0.0, 1.0), randfn(0.0, 1.0)).normalized()
+	var up = Vector3.UP if abs(a.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
+	var t = a.cross(up).normalized()
+	var b_angle = TRIAD_B_CELLS * CELL_STEP
+	var c_angle = TRIAD_C_CELLS * CELL_STEP
+	return [a, (a * cos(b_angle) + t * sin(b_angle)).normalized(), (a * cos(c_angle) - t * sin(c_angle)).normalized()]
+
+func _note_triad_war(attacker_colony: int) -> void:
+	# Triad: the first attack by the aggressor starts the war; _tick_autochant answers it.
+	if not TEST_FIELD or TEST_FIELD_SCENARIO != "triad" or _triad_war_tick >= 0:
+		return
+	if attacker_colony >= _field_specs.size() or not _field_specs[attacker_colony].get("aggressor", false):
+		return
+	_triad_war_tick = _tick_num
+	_telemetry({ "type": "triad_war", "tick": _tick_num, "aggressor": attacker_colony })
+
 func _spawn_test_field():
 	# Founders are scattered at random over the whole sphere (TEST_FIELD_RANDOM_SPREAD), or spread
 	# evenly via a Fibonacci (golden-spiral) lattice with a random rotation offset when it's off.
@@ -2717,9 +2867,12 @@ func _spawn_test_field():
 	var golden = PI * (3.0 - sqrt(5.0))
 	var phase = randf() * TAU
 	var placed = []
+	var triad_dirs = _triad_founder_dirs() if TEST_FIELD_SCENARIO == "triad" else []
 	for i in range(n):
 		var dir: Vector3
-		if TEST_FIELD_RANDOM_SPREAD:
+		if not triad_dirs.is_empty():
+			dir = triad_dirs[i]
+		elif TEST_FIELD_RANDOM_SPREAD:
 			dir = _random_founder_dir(placed)
 		else:
 			var y = 1.0 - (float(i) / float(max(1, n - 1))) * 2.0   # +1 (north) down to -1 (south)
