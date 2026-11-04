@@ -119,6 +119,17 @@ var wall_banners = []  # [{cell: Vector2i, colony: int, ticks_remaining: int, th
 # rolls until its block dies (combat or decay), then drops back to the surface. The block
 # carries the inverse ref in dot_data as "perched_by".
 var wall_perch = {}
+# Attack alarms: raised for the DEFENDING colony when a fight starts on it (_initiate_combat).
+# Its defenders within ATTACK_ALARM_RADIUS roll Shape D toward the attacker on their next defend
+# roll, without needing a sighting of their own — so walls go up where a colony is attacked.
+const ATTACK_ALARM_RADIUS = 15  # cells; as WALL_BANNER_RADIUS
+const ATTACK_ALARM_TTL = 6      # colony ticks the alarm lasts after the latest attack
+# Least Shape D chance on an alarm-triggered try. Without it only defend-and-build cultures wall
+# (~0.1% per try for everyone else, who were most of the colonies actually attacked). 0.08 over
+# the ~7,000 alarm tries of the first 288-tick test run gives ~2 walls per tick across the world,
+# in line with the pre-trust runs. Placeholder; tune from shape_d_roll "source": "attacked".
+const ATTACK_ALARM_WALL_FLOOR = 0.08
+var attack_alarms = []  # [{cell: Vector2i, colony: int, ticks_remaining: int, threat_dir: Vector3, tried: {dot: true}}]
 
 # Per-colony population cap (testing aid). Lowered from 1000 for the 10-colony field: at
 # 1000 the ceiling was 10,000 dots, and combined with uncapped marks the run hit ~32k scene
@@ -834,6 +845,7 @@ func tick() -> void:
 	_tick_rally_banners()
 	_tick_build_banners()
 	_tick_wall_banners()
+	_tick_attack_alarms()
 	_tick_combat_clusters()
 	_tick_specks()
 	_tick_surface_marks()
@@ -1576,6 +1588,12 @@ func _execute_primitive(dot: int, primitive: String, dials: Dictionary):
 			#    tick after tick — which is why a single contact walled up a whole population.
 			# Filtered here rather than inside _find_nearest_foreign_in_radius on purpose: that
 			# finder also feeds attack, which is still allowed to target blocks.
+			#
+			# WALL WHEN ATTACKED (2026-11-04). Trust made sightings rare: a defender's low attack
+			# weight stops it seeing a neighbour as an enemy once they have been at peace a few
+			# ticks, so walls nearly vanished. An attack alarm (_drop_attack_alarm, raised when
+			# this colony is attacked) is now a second trigger: a defender near the fight rolls
+			# Shape D toward the attacker even without its own sighting, once per alarm.
 			var pending = dot_data[dot]["pending_observe"]
 			var enemy_entry = pending["enemy"] if pending != null else null
 			var target = enemy_entry["dot"] if enemy_entry != null else null
@@ -1583,10 +1601,22 @@ func _execute_primitive(dot: int, primitive: String, dials: Dictionary):
 				target = null
 			if target != null and dot_data[target].get("is_block", false):
 				target = null
+			var threat_dir = null
+			var threat_source = ""
 			if target != null:
 				# Consume before rolling: one sighting buys exactly one attempt, win or lose.
 				# Only the enemy slot clears — speck/ally/banner belong to other consumers.
 				pending["enemy"] = null
+				threat_dir = _dir_of(target)
+				threat_source = "sight"
+			else:
+				var alarm = _find_nearest_attack_alarm(_cell_key(_dir_of(dot)), dot_data[dot]["colony"], dot)
+				if alarm != null:
+					# One attempt per dot per alarm (cleared when a new attack refreshes it).
+					alarm["tried"][dot] = true
+					threat_dir = alarm["threat_dir"]
+					threat_source = "attacked"
+			if threat_dir != null:
 				var d_colony = dot_data[dot]["colony"]
 				var defend_weight = dot_data[dot]["cce"]["action"].get("defend", 0.0)
 				var avg_build = _compute_colony_avg_build_cce(d_colony)
@@ -1594,8 +1624,11 @@ func _execute_primitive(dot: int, primitive: String, dials: Dictionary):
 				# raw product hit 1.72 in the 5-colony run — `randf() < 1.72` always succeeds, which
 				# is why generalists walled on 93% of rolls. A probability above 1 was never intended.
 				var shape_d_prob = clamp(defend_weight * avg_build * SHAPE_D_SCALE, 0.0, 1.0)
+				if threat_source == "attacked":
+					# Any attacked colony walls up, not just defend-and-build cultures.
+					shape_d_prob = max(shape_d_prob, ATTACK_ALARM_WALL_FLOOR)
 				var shape_d_success = randf() < shape_d_prob
-				_telemetry({ "type": "shape_d_roll", "tick": _tick_num, "colony": d_colony, "prob": shape_d_prob, "success": shape_d_success })
+				_telemetry({ "type": "shape_d_roll", "tick": _tick_num, "colony": d_colony, "prob": shape_d_prob, "success": shape_d_success, "source": threat_source })
 				if shape_d_success:
 					# Stage (b): a Shape D success drops (or refreshes) a wall banner (now carrying
 					# the threat bearing) at the defender's current cell. Stage (c): builds an
@@ -1603,7 +1636,6 @@ func _execute_primitive(dot: int, primitive: String, dials: Dictionary):
 					# Stage (d): the waller then perches on its own segment and locks. Stage (e)
 					# extenders respond to the banner via _execute_build.
 					var my_cell = _cell_key(_dir_of(dot))
-					var threat_dir = _dir_of(target)
 					_drop_wall_banner(my_cell, d_colony, threat_dir)
 					# Only found a segment on a cell free of a prior same-colony block and not
 					# mid-fight; otherwise leave the banner for extenders and march normally.
@@ -1703,6 +1735,7 @@ func _initiate_combat(attacker: int, defender: int, intensity: float):
 	var contact_cell = _cell_key(_dir_of(defender))
 	_drop_rally_banner(contact_cell, dot_data[attacker]["colony"])
 	_drop_rally_banner(contact_cell, dot_data[defender]["colony"])
+	_drop_attack_alarm(contact_cell, dot_data[defender]["colony"], _dir_of(attacker))
 	# Observation-age diagnostic: how stale was the attacker's enemy observation when combat
 	# fired? Defensive read — sentinel -1 for "unknown" if the stamp is missing (impossible via
 	# the current guarded call path, but _initiate_combat is standalone).
@@ -2181,6 +2214,43 @@ func _tick_wall_banners():
 			if wall_banners[i]["ticks_remaining"] <= 0:
 				wall_banners.remove_at(i)
 		i -= 1
+
+func _drop_attack_alarm(cell: Vector2i, colony: int, threat_dir: Vector3):
+	# A new attack at the same cell refreshes the alarm and lets its defenders try again.
+	for alarm in attack_alarms:
+		if alarm["colony"] == colony and alarm["cell"] == cell:
+			alarm["ticks_remaining"] = ATTACK_ALARM_TTL
+			alarm["threat_dir"] = threat_dir
+			alarm["tried"].clear()
+			return
+	attack_alarms.append({"cell": cell, "colony": colony, "ticks_remaining": ATTACK_ALARM_TTL, "threat_dir": threat_dir, "tried": {}})
+
+func _tick_attack_alarms():
+	# Colony clock, as _tick_wall_banners.
+	var i = attack_alarms.size() - 1
+	while i >= 0:
+		if _due.has(attack_alarms[i]["colony"]):
+			attack_alarms[i]["ticks_remaining"] -= 1
+			if attack_alarms[i]["ticks_remaining"] <= 0:
+				attack_alarms.remove_at(i)
+		i -= 1
+
+func _find_nearest_attack_alarm(my_cell: Vector2i, my_colony: int, dot: int):
+	# The nearest live alarm of this colony in range that this dot hasn't already answered.
+	if attack_alarms.is_empty():
+		return null
+	var best = null
+	var best_dist = ATTACK_ALARM_RADIUS * ATTACK_ALARM_RADIUS + 1
+	for alarm in attack_alarms:
+		if alarm["colony"] != my_colony or alarm["ticks_remaining"] <= 0:
+			continue
+		if alarm["tried"].has(dot):
+			continue
+		var d = _torus_cell_dist_sq(my_cell, alarm["cell"])
+		if d < best_dist:
+			best_dist = d
+			best = alarm
+	return best
 
 func _find_nearest_wall_banner(my_cell: Vector2i, my_colony: int):
 	if wall_banners.is_empty():
