@@ -63,6 +63,13 @@ var _net: WebSocketPeer = null
 var _net_assembler = null
 var _net_retry = 0.0
 var _framed = false   # the camera has been framed on the colony (server mode: after the first snapshot)
+# Server mode: a quiet line at the top of the screen while there is no world to draw — the
+# first snapshot can take tens of seconds over the Mac's uplink, and a dead server otherwise
+# looks the same as an empty planet. Hidden once a snapshot arrives; back if the link drops.
+const NET_STATUS_WAITING = "RECEIVING THE WORLD"
+const NET_STATUS_OFFLINE = "THE WORLD IS OFFLINE · TRYING AGAIN"
+var _net_status: Label = null
+var _net_down = false  # the connection closed or failed and no snapshot has arrived since
 const WordCloud = preload("res://word_cloud.gd")
 # Batched drawing (separation stage 5): one MultiMeshInstance3D per entity KIND instead of a mesh
 # node per entity — tens of thousands of nodes become five draws. Each kind keeps a dense array of
@@ -113,6 +120,7 @@ func _ready():
 	if _use_server():
 		sim = WorldMirror.new()
 		_net_assembler = WorldStream.Assembler.new()
+		_build_net_status()
 		_net_connect()
 	else:
 		sim = WorldSim.new()
@@ -163,6 +171,7 @@ func _process(delta):
 	_update_sun()
 	if _use_server():
 		_net_poll(delta)
+		_update_net_status()
 	else:
 		tick_timer += delta
 		if tick_timer >= TICK_SPEED:
@@ -264,6 +273,7 @@ func _net_poll(delta: float) -> void:
 				if msg != null:
 					sim.apply(msg)
 					if msg.get("kind") == "snapshot":
+						_net_down = false
 						print("[net] world received: t%d, %d entities" % [sim._tick_num, sim.dot_data.size() + sim.speck_data.size() + sim.mark_data.size()])
 						_net_send({ "active": get_window().has_focus() })
 						if not _framed:
@@ -271,10 +281,39 @@ func _net_poll(delta: float) -> void:
 							_focus_on_colony()
 					_update_hud()
 		WebSocketPeer.STATE_CLOSED:
+			_net_down = true
 			_net_retry -= delta
 			if _net_retry <= 0.0:
 				_net_assembler = WorldStream.Assembler.new()
 				_net_connect()
+
+func _build_net_status() -> void:
+	# Spaced small capitals in the loading page's style (web/shell.html), on the dark sky above
+	# the planet rather than over it.
+	var font = FontVariation.new()
+	font.base_font = ThemeDB.fallback_font
+	font.spacing_glyph = 3
+	var settings = LabelSettings.new()
+	settings.font = font
+	settings.font_size = 15
+	settings.font_color = Color(0.85, 0.87, 0.95)
+	_net_status = Label.new()
+	_net_status.label_settings = settings
+	_net_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_net_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_net_status.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	_net_status.offset_top = 48
+	_net_status.text = NET_STATUS_WAITING
+	$UI.add_child(_net_status)
+
+func _update_net_status() -> void:
+	var waiting = _net_down or not sim.has_world
+	_net_status.visible = waiting
+	if not waiting:
+		return
+	_net_status.text = NET_STATUS_OFFLINE if _net_down else NET_STATUS_WAITING
+	# A slow breathing pulse, so a long wait still reads as alive.
+	_net_status.modulate.a = 0.85 + 0.15 * sin(Time.get_ticks_msec() / 1000.0 * 2.0)
 
 func _net_send(msg: Dictionary) -> void:
 	if _net != null and _net.get_ready_state() == WebSocketPeer.STATE_OPEN:
