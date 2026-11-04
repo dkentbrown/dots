@@ -171,7 +171,7 @@ const TEST_POPULATION = 15
 # Set TEST_FIELD = false to restore the shipped player-vs-enemy spawn exactly.
 const TEST_FIELD = true
 const TEST_FIELD_REVEAL_ALL = false   # bypass fog so every field colony is observable from tick 0
-const TEST_FIELD_DISCRETE_COLORS = true  # colour dots by colony (see COLONY_PALETTE) instead of
+const TEST_FIELD_DISCRETE_COLORS = false # colour dots by colony (see COLONY_PALETTE) instead of
 										 # by CCE tint, so specs are told apart at a glance. The CCE
 										 # colouring in _dot_colors is untouched and returns
 										 # when this is false.

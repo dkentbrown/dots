@@ -9,7 +9,7 @@ extends RefCounted
 const WorldSim = preload("res://world_sim.gd")
 const WorldStream = preload("res://world_stream.gd")
 
-var dot_data = {}      # id -> { dir, is_block, is_wall, stack_index, facing, threat_dir, colors }
+var dot_data = {}      # id -> { dir, is_block, is_wall, stack_index, facing, threat_dir, colors, colony (yours only) }
 var speck_data = {}    # id -> { dir }
 var mark_data = {}     # id -> { dir, size, color }
 var wall_perch = {}
@@ -97,6 +97,9 @@ func _apply_entities(e: Dictionary) -> void:
 		if flags & WorldStream.FLAG_FACING:
 			rec["facing"] = d[4][k]
 			k += 1
+		if flags & WorldStream.FLAG_OWN:
+			# Only your own colony's id is sent; other colonies' dots carry none.
+			rec["colony"] = WorldSim.LOCAL_COLONY
 		dot_data[id] = rec
 		_view_dirty[id] = touched
 	var s = e["specks"]

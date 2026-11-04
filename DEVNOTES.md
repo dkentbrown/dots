@@ -2724,3 +2724,12 @@ Then open https://noema.dkentbrown.dev. Without the server and tunnel running, t
 - **`web/deploy.sh`:** gzip runs with `-n`, so an unchanged engine is byte-identical and isn't re-uploaded (that deploy took 2 s).
 - **Headless Godot runs strip the MCP autoloads from `project.godot`** when they exit (the plugin cleaning up after itself). Back `project.godot` up before an export or server run and restore it afterwards.
 - **Site (`portfolio-site`, pushed to `main` as `472fca1`, live on Pages):** a burgundy banner at the top of `/work/noema/` ("v0.1 / Live now · The world is listening. Step in and give a colony its first words. · Play in your browser →") links to https://noema.dkentbrown.dev. Checked live at desktop and phone widths; the click lands on the game.
+
+### Same day, later: CCE colours back; your colony shimmers
+Dustan: "It's hard to know what colony is mine." Bible §16 leaves colony colour and visual identity open; this is a first answer.
+- **Colours follow CCE again:** `TEST_FIELD_DISCRETE_COLORS = false`. Dots are tinted toward their CCE mix, walls are teal, and fogged colonies are grey. The 50-colour field palette now shows only in the HUD names.
+- **Your colony shimmers** (Dustan chose this over a ground-ring beacon, or both). Your own dots, blocks and walls pulse together on a 2 s cycle: their glow swells to 2.2× and whitens 35% at the peak. Everyone else's are steady, and the colours themselves don't change.
+  - **Shader:** `entity.gdshader` reads the flag from the alpha of the instance custom data (the emission colour's alpha, unused before). `shimmer_period`, `shimmer_strength` and `shimmer_whiten` are uniforms.
+  - **Client:** `main.gd` `_entity_colors` sets that alpha to 1 for a dot whose `colony` is `LOCAL_COLONY`, and 0 for everything else (specks and marks included).
+  - **Wire:** `world_stream.gd` adds `FLAG_OWN` (8). `world_mirror.gd` stores `colony = LOCAL_COLONY` on those dots only; other colonies' dots carry no colony id.
+- Checked in the browser on a fresh world: your colony visibly pulses between frames a second apart; no console errors. Revealed neighbours' CCE tints were not checked yet (none met by t5). Note that with the real 24 h day, your colony may be on the night side when you open the game.

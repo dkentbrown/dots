@@ -21,6 +21,7 @@ const HEADER_BYTES = 12
 const FLAG_BLOCK = 1
 const FLAG_WALL = 2      # a wall's threat_dir follows in the dot "extra" array
 const FLAG_FACING = 4    # the dot's facing follows in "extra" (after threat_dir for a wall)
+const FLAG_OWN = 8       # the player's own colony (LOCAL_COLONY); the client makes these shimmer
 
 # --- Server side ---
 
@@ -50,6 +51,8 @@ static func entity_batch(sim, ids) -> Dictionary:
 			if d.get("facing") != null:
 				flags |= FLAG_FACING
 				d_extra.append(d["facing"])
+			if d.get("colony") == WorldSim.LOCAL_COLONY:
+				flags |= FLAG_OWN
 			d_ids.append(id)
 			d_dirs.append(d["dir"])
 			d_flags.append(flags)

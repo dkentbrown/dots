@@ -430,13 +430,21 @@ func _entity_transform(id: int) -> Transform3D:
 	return Transform3D(b, mark_dir * WorldSim.SPHERE_RADIUS)
 
 func _entity_colors(id: int) -> Array:
-	# [albedo, emission] in sRGB.
+	# [albedo, emission] in sRGB. The emission's alpha is the "yours" flag entity.gdshader reads:
+	# 1 for your own colony's dots, blocks and walls (they shimmer), 0 for everything else.
+	var c: Array
+	var own = 0.0
 	if sim.dot_data.has(id):
-		return sim._dot_colors(id)
-	if sim.speck_data.has(id):
-		return [SPECK_COLOR, SPECK_COLOR]
-	var c = sim.mark_data[id]["color"]
-	return [c, c]
+		c = sim._dot_colors(id)
+		if sim.dot_data[id].get("colony") == WorldSim.LOCAL_COLONY:
+			own = 1.0
+	elif sim.speck_data.has(id):
+		c = [SPECK_COLOR, SPECK_COLOR]
+	else:
+		c = [sim.mark_data[id]["color"], sim.mark_data[id]["color"]]
+	var emission: Color = c[1]
+	emission.a = own
+	return [c[0], emission]
 
 func _surface_basis(dir: Vector3) -> Basis:
 	# y = the surface normal; x/z span the tangent plane against a fixed world reference axis.
