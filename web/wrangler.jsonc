@@ -1,0 +1,14 @@
+// The Noema web page: a Worker with static assets on noema.dkentbrown.dev.
+// Deploy with web/deploy.sh, which stages build/site from the Godot Web export first.
+{
+  "name": "noema",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "../build/site",
+    "binding": "ASSETS",
+    "run_worker_first": ["/index.wasm"]
+  },
+  "routes": [{ "pattern": "noema.dkentbrown.dev", "custom_domain": true }],
+  "workers_dev": false
+}

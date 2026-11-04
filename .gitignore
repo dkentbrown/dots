@@ -31,3 +31,6 @@ telemetry.jsonl
 
 # Inspection/plan reports (read directly by planning layer, not committed)
 code_report.md
+
+# Web export output
+build/

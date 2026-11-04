@@ -2424,7 +2424,7 @@ Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open aga
 
 ---
 
-## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Merged to `main` via PR #3, `6abe9ac`: world scale + separation stages 1–6; active/passive clocks merged via PR #4, `7039ff5`; trust between colonies + allies merged via PR #5, `3719351`; camera auto-tilt merged via PR #6, `875550e`; turning sky merged via PR #7.)
+## 2026-10-27 (cont.) — Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — SUPERSEDED by 2026-11-04 below.** (Merged to `main` via PR #3, `6abe9ac`: world scale + separation stages 1–6; active/passive clocks merged via PR #4, `7039ff5`; trust between colonies + allies merged via PR #5, `3719351`; camera auto-tilt merged via PR #6, `875550e`; turning sky merged via PR #7.)
 
 Fresh session: read THIS entry, then the 2026-10-27 word-cloud entry and the 2026-10-23 entry above, `RECONCILIATION.md` (S.b update, CLIENT / UX), and the bible.
 
@@ -2642,3 +2642,72 @@ Dustan: zoom was anchored to the screen centre, so a close-up of a monument was 
 - On the 20 s test day the whole sky turns once every 20 s; on the real 24 h day, 15° an hour.
 - `validate_script` clean (`main.gd`); the shader parses in the editor (its uniform list includes `sky_turn`, no shader errors). **Not run in Godot by Claude.** Check: the sun stays put among the stars; stars near the sky's north pole barely move; the stars move smoothly; the 20 s spin isn't too distracting.
 - **Dustan's look (editor run `1793201952`, no runtime errors):** "still looks a little janky... but I think it's good enough for the time being." Merged as is. **Open, not diagnosed:** likely suspects are the 20 s test day (the whole sky turns 18° a second) and the tiny star cores shimmering as they slide across pixels; a slower test day is the cheap first try.
+
+## 2026-11-04 — CURRENT STATE. The game runs in a browser at noema.dkentbrown.dev against a world server on Dustan's Mac. **Hydration entry — START HERE.** (Branch `session/2026-11-04-web`, off `main` after PR #7; committed, **not pushed or merged**.)
+
+Fresh session: read THIS entry, then the 2026-10-27 (cont.) entry above for the multiplayer decisions and everything merged through PR #7, `RECONCILIATION.md`, and the bible.
+
+### Decisions (Dustan)
+- **No single-player build.** Ship multiplayer: a web page on his site, with a headless server.
+- **Server for now: his Mac**, reached through a Cloudflare Tunnel (no ports opened on the home network; traffic in and out is only the game's). A rented box or basement machine later.
+- **Accounts: hosted sign-in, decided up front ("only figure this out once") but deferred.** Firebase Auth, Google + Apple sign-in recommended; not built.
+- **This step:** one player (Dustan is colony 0, `LOCAL_COLONY`), **5 s world tick** (`--tick-seconds 5`), no saving, no colony per player, no phone apps.
+- The game **fills the browser window** (no black bars): `canvas_items` + `expand` stretch already does this; the export uses the adaptive canvas size.
+
+### How it fits together
+- **Browser:** `https://noema.dkentbrown.dev` — a Cloudflare Worker named `noema` serving the Godot Web export as static assets (`web/worker.js`, `web/wrangler.jsonc`).
+- **Server:** `server.tscn` headless on the Mac, `--listen 8910` (bound to 127.0.0.1 only).
+- **Tunnel:** `noema` (id `9aaa6bbf-…`), config `~/.cloudflared/noema.yml`, routes `noema-server.dkentbrown.dev` → `http://127.0.0.1:8910`. The browser connects to `wss://noema-server.dkentbrown.dev`.
+- **WebSockets**, not ENet (browsers can't do UDP). This replaces bible §15's HTTP endpoints — **RECONCILIATION canon note still to write.**
+
+### Code
+- **`world_stream.gd` (new) — the wire format.**
+  - Server → client: `snapshot` on join (everything), then one `tick` message per world tick (the sim's own view-change stream: changed entities + gone ids).
+  - Entities are packed per kind into parallel arrays (dots: id, dir, flags block/wall/facing, stack index, threat_dir/facing, albedo + emission as rgba8; specks: id, dir; marks: id, dir, size, colour). Colours are computed on the server.
+  - Plus the state the HUD, camera and word cloud read: tick, colony counts, block counts, soul, colony centres, periods, wall perches, and colony profiles for the word cloud.
+  - Framing: `var_to_bytes` → zstd → 256 KB chunks with a 12-byte header (message id, part, parts, raw size), to stay under proxy message limits. `Assembler` rebuilds them.
+  - Client → server: `{"chant": text}` (capped at 200 characters) and `{"active": bool}` (window focus).
+- **`world_mirror.gd` (new) — the client's copy of the world.** It has the same member names `main.gd` reads from a WorldSim (`dot_data`, `colony_counts`, `_dot_colors`, `take_view_changes`, `_pick_cloud_word`, …), so the drawing code is unchanged. It never ticks. A world-less WorldSim provides only the chant tables, so the word cloud picks words as it does locally.
+- **`server.gd`:**
+  - `--listen PORT` and `--tick-seconds S`.
+  - A joining client gets a snapshot, then each tick is broadcast. A client that falls 32 MB behind is dropped, then reconnects and gets a fresh snapshot.
+  - Chants apply to `LOCAL_COLONY`. `LOCAL_COLONY` is active while any connected client has focus, and passive with none.
+  - The per-tick line shows the client count.
+- **`main.gd`:** a web build always connects (`OS.has_feature("web")`); in the editor, set `USE_SERVER = true` to connect to `ws://127.0.0.1:8910`.
+  - The page picks the server by hostname: localhost → the local server; anything else → `SERVER_URL_PUBLIC`.
+  - The client reconnects every 3 s when the connection drops, and the camera focuses on your colony once, after the first snapshot.
+  - Chants and focus go to the server instead of the local sim. With `USE_SERVER` false the editor runs the local sim exactly as before.
+- **Deploying:**
+  - `export_presets.cfg`: Web preset, no threads (so no COOP/COEP headers are needed), adaptive canvas. **The file is gitignored**, as it always has been, so a fresh clone must recreate it.
+  - `build/` is gitignored and has a `.gdignore`.
+  - `web/deploy.sh`: export, stage `build/site`, gzip the engine, `wrangler deploy`. Use `--no-export` to redeploy the last export; `WRANGLER=…/portfolio-site/node_modules/.bin/wrangler` uses the site's logged-in wrangler.
+  - **`index.wasm` is 37.7 MB, over Cloudflare's 25 MiB per-file limit**, so it ships as `index.wasm.gz` (9.4 MB). The Worker serves it as `/index.wasm` with `Content-Encoding: gzip` (`encodeBody: "manual"`). This replaced the planned R2 bucket: one service fewer, and it was checked byte-for-byte after decompression.
+
+### Verified (by Claude, 2026-11-04)
+- **Headless probe client against the local server:**
+  - The snapshot at t19 was 57 KB compressed (4,284 entities); each tick was about 20 KB.
+  - The chant "war war" was applied by the server, and the word cloud picked from the server-sent profiles.
+- **Local browser** (`python3 -m http.server` on `build/web`, plus the local server):
+  - Connected, received the world (t31, 8,080 entities), drew it full-window, and kept updating.
+  - Word-cloud taps cast "invade hunger" to the server, which applied it.
+- **Live: `https://noema.dkentbrown.dev` through the tunnel** received the world (t108, 29,397 entities) and drew it.
+- **Headers:** `/index.wasm` returns `application/wasm` + `gzip`.
+- **Server load:** ticks grew to 1.5–2 s at ~17.7k live dots and ~7.7k blocks (t110, about 9 minutes in). That fits the 5 s tick but would not fit the old 1 s tick.
+
+### Running it
+```
+cd ~/Desktop/dkentbrown.dev/Dots/dots
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path . res://server.tscn -- --listen 8910 --tick-seconds 5
+cloudflared tunnel --config ~/.cloudflared/noema.yml run noema
+```
+Then open https://noema.dkentbrown.dev. Without the server and tunnel running, the page loads but shows an empty planet and retries every 3 s.
+
+### Open / next
+- **No saving:** every server start is a fresh world.
+- **The world keeps growing.** Population, snapshot size and tick cost climb with it; nothing caps it yet.
+- **Smaller updates:** each tick resends every changed entity in full, and the snapshot is everything.
+- The page title is still "Dots" (the project name).
+- Not yet tried on a phone browser or in Safari.
+- **Accounts** (Firebase, Google + Apple) → a colony per player → saving → a host that isn't the Mac.
+- Still open from before: the sky jank and the tall towers (stack index 39).
+- The RECONCILIATION note for WebSockets replacing the HTTP endpoints.
