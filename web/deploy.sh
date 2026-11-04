@@ -14,6 +14,6 @@ fi
 # Stage: the engine goes up gzipped (see web/worker.js).
 rm -rf build/site
 cp -R build/web build/site
-gzip -9 -c build/site/index.wasm > build/site/index.wasm.gz
+gzip -9 -n -c build/site/index.wasm > build/site/index.wasm.gz
 rm build/site/index.wasm
 cd web && $WRANGLER deploy

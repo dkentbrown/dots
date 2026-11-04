@@ -2711,3 +2711,16 @@ Then open https://noema.dkentbrown.dev. Without the server and tunnel running, t
 - **Accounts** (Firebase, Google + Apple) → a colony per player → saving → a host that isn't the Mac.
 - Still open from before: the sky jank and the tall towers (stack index 39).
 - The RECONCILIATION note for WebSockets replacing the HTTP endpoints.
+
+### Same day, later: fog, real days, Noema branding, the play banner
+- **Fog of war is back on:** `TEST_FIELD_REVEAL_ALL = false` (world_sim.gd). The server works out the fog, from colony 0's point of view; one fog per player is needed once each player has a colony.
+- **The real 24-hour day:** `SUN_FAST_DAY = false` (main.gd). Dustan chose 24 h over 1 h or 10 min.
+- **Noema branding replaces Godot's** (Dustan: "replace as much of the splash as possible"):
+  - `web/shell.html` is the export's custom HTML shell (`html/custom_html_shell`): a night background, a lit planet with colony dots, the NOEMA wordmark, "What will they remember?", chant words drifting in, a thin progress line ("Downloading the world · N%" → "Waking the colonies"), then a fade into the game. The engine wiring follows Godot 4.6's stock shell, minus the service-worker branch (no threads, no PWA).
+  - The engine's own splash shows no image (`boot_splash/show_image=false`), on the same night colour (`#07080d`).
+  - The project icon is now `noema_icon.svg` (favicon and touch icon); Godot's `icon.svg` stays in the repo, unused.
+  - `config/name.web="Noema"` names the project "Noema" only in web builds, so the editor's `user://` folder (which the MCP plugin uses) is unchanged. The tab title stays "Noema" after the engine starts (checked).
+- **`export_presets.cfg` is now committed** (it was gitignored). It holds no secrets in Godot 4, and the deploy depends on it.
+- **`web/deploy.sh`:** gzip runs with `-n`, so an unchanged engine is byte-identical and isn't re-uploaded (that deploy took 2 s).
+- **Headless Godot runs strip the MCP autoloads from `project.godot`** when they exit (the plugin cleaning up after itself). Back `project.godot` up before an export or server run and restore it afterwards.
+- **Site (`portfolio-site`, pushed to `main` as `472fca1`, live on Pages):** a burgundy banner at the top of `/work/noema/` ("v0.1 / Live now · The world is listening. Step in and give a colony its first words. · Play in your browser →") links to https://noema.dkentbrown.dev. Checked live at desktop and phone widths; the click lands on the game.

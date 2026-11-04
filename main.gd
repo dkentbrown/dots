@@ -40,7 +40,7 @@ const PAN_GESTURE_SPEED = 30.0
 # among the stars and the whole sky wheels once per day, as seen from a spinning planet.
 const SUN_DAY_SECONDS = 86400.0
 const SUN_TEST_DAY_SECONDS = 20.0
-const SUN_FAST_DAY = true
+const SUN_FAST_DAY = false
 const SUN_DECLINATION_DEG = 23.4
 
 const TICK_SPEED = 1.0
