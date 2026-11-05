@@ -32,3 +32,6 @@ code_report.md
 
 # Web export output
 build/
+
+# Wrangler's local cache (holds the Cloudflare account id and email)
+web/.wrangler/
