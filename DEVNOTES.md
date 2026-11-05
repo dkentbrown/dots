@@ -2424,7 +2424,7 @@ Branch **`session/2026-07-28-soul-dilution`**, PR **dkentbrown/dots#2** open aga
 
 ---
 
-## 2026-10-27 (cont.) — CURRENT STATE. Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — START HERE.** (Merged to `main` via PR #3, `6abe9ac`: world scale + separation stages 1–6; active/passive clocks merged via PR #4, `7039ff5`; trust between colonies + allies merged via PR #5, `3719351`; camera auto-tilt merged via PR #6, `875550e`; turning sky merged via PR #7.)
+## 2026-10-27 (cont.) — Multiplayer plan agreed; world scaled to 50 players. **Hydration entry — SUPERSEDED by 2026-11-04 below.** (Merged to `main` via PR #3, `6abe9ac`: world scale + separation stages 1–6; active/passive clocks merged via PR #4, `7039ff5`; trust between colonies + allies merged via PR #5, `3719351`; camera auto-tilt merged via PR #6, `875550e`; turning sky merged via PR #7.)
 
 Fresh session: read THIS entry, then the 2026-10-27 word-cloud entry and the 2026-10-23 entry above, `RECONCILIATION.md` (S.b update, CLIENT / UX), and the bible.
 
@@ -2642,3 +2642,131 @@ Dustan: zoom was anchored to the screen centre, so a close-up of a monument was 
 - On the 20 s test day the whole sky turns once every 20 s; on the real 24 h day, 15° an hour.
 - `validate_script` clean (`main.gd`); the shader parses in the editor (its uniform list includes `sky_turn`, no shader errors). **Not run in Godot by Claude.** Check: the sun stays put among the stars; stars near the sky's north pole barely move; the stars move smoothly; the 20 s spin isn't too distracting.
 - **Dustan's look (editor run `1793201952`, no runtime errors):** "still looks a little janky... but I think it's good enough for the time being." Merged as is. **Open, not diagnosed:** likely suspects are the 20 s test day (the whole sky turns 18° a second) and the tiny star cores shimmering as they slide across pixels; a slower test day is the cheap first try.
+
+## 2026-11-04 — CURRENT STATE. The game runs in a browser at noema.dkentbrown.dev against a world server on Dustan's Mac. **Hydration entry — START HERE.** (Branch `session/2026-11-04-web`, off `main` after PR #7; committed, **not pushed or merged**.)
+
+Fresh session: read THIS entry, then the 2026-10-27 (cont.) entry above for the multiplayer decisions and everything merged through PR #7, `RECONCILIATION.md`, and the bible.
+
+### Decisions (Dustan)
+- **No single-player build.** Ship multiplayer: a web page on his site, with a headless server.
+- **Server for now: his Mac**, reached through a Cloudflare Tunnel (no ports opened on the home network; traffic in and out is only the game's). A rented box or basement machine later.
+- **Accounts: hosted sign-in, decided up front ("only figure this out once") but deferred.** Firebase Auth, Google + Apple sign-in recommended; not built.
+- **This step:** one player (Dustan is colony 0, `LOCAL_COLONY`), **5 s world tick** (`--tick-seconds 5`), no saving, no colony per player, no phone apps.
+- The game **fills the browser window** (no black bars): `canvas_items` + `expand` stretch already does this; the export uses the adaptive canvas size.
+
+### How it fits together
+- **Browser:** `https://noema.dkentbrown.dev` — a Cloudflare Worker named `noema` serving the Godot Web export as static assets (`web/worker.js`, `web/wrangler.jsonc`).
+- **Server:** `server.tscn` headless on the Mac, `--listen 8910` (bound to 127.0.0.1 only).
+- **Tunnel:** `noema` (id `9aaa6bbf-…`), config `~/.cloudflared/noema.yml`, routes `noema-server.dkentbrown.dev` → `http://127.0.0.1:8910`. The browser connects to `wss://noema-server.dkentbrown.dev`.
+- **WebSockets**, not ENet (browsers can't do UDP). This replaces bible §15's HTTP endpoints — **RECONCILIATION canon note still to write.**
+
+### Code
+- **`world_stream.gd` (new) — the wire format.**
+  - Server → client: `snapshot` on join (everything), then one `tick` message per world tick (the sim's own view-change stream: changed entities + gone ids).
+  - Entities are packed per kind into parallel arrays (dots: id, dir, flags block/wall/facing, stack index, threat_dir/facing, albedo + emission as rgba8; specks: id, dir; marks: id, dir, size, colour). Colours are computed on the server.
+  - Plus the state the HUD, camera and word cloud read: tick, colony counts, block counts, soul, colony centres, periods, wall perches, and colony profiles for the word cloud.
+  - Framing: `var_to_bytes` → zstd → 256 KB chunks with a 12-byte header (message id, part, parts, raw size), to stay under proxy message limits. `Assembler` rebuilds them.
+  - Client → server: `{"chant": text}` (capped at 200 characters) and `{"active": bool}` (window focus).
+- **`world_mirror.gd` (new) — the client's copy of the world.** It has the same member names `main.gd` reads from a WorldSim (`dot_data`, `colony_counts`, `_dot_colors`, `take_view_changes`, `_pick_cloud_word`, …), so the drawing code is unchanged. It never ticks. A world-less WorldSim provides only the chant tables, so the word cloud picks words as it does locally.
+- **`server.gd`:**
+  - `--listen PORT` and `--tick-seconds S`.
+  - A joining client gets a snapshot, then each tick is broadcast. A client that falls 32 MB behind is dropped, then reconnects and gets a fresh snapshot.
+  - Chants apply to `LOCAL_COLONY`. `LOCAL_COLONY` is active while any connected client has focus, and passive with none.
+  - The per-tick line shows the client count.
+- **`main.gd`:** a web build always connects (`OS.has_feature("web")`); in the editor, set `USE_SERVER = true` to connect to `ws://127.0.0.1:8910`.
+  - The page picks the server by hostname: localhost → the local server; anything else → `SERVER_URL_PUBLIC`.
+  - The client reconnects every 3 s when the connection drops, and the camera focuses on your colony once, after the first snapshot.
+  - Chants and focus go to the server instead of the local sim. With `USE_SERVER` false the editor runs the local sim exactly as before.
+- **Deploying:**
+  - `export_presets.cfg`: Web preset, no threads (so no COOP/COEP headers are needed), adaptive canvas. **The file is gitignored**, as it always has been, so a fresh clone must recreate it.
+  - `build/` is gitignored and has a `.gdignore`.
+  - `web/deploy.sh`: export, stage `build/site`, gzip the engine, `wrangler deploy`. Use `--no-export` to redeploy the last export; `WRANGLER=…/portfolio-site/node_modules/.bin/wrangler` uses the site's logged-in wrangler.
+  - **`index.wasm` is 37.7 MB, over Cloudflare's 25 MiB per-file limit**, so it ships as `index.wasm.gz` (9.4 MB). The Worker serves it as `/index.wasm` with `Content-Encoding: gzip` (`encodeBody: "manual"`). This replaced the planned R2 bucket: one service fewer, and it was checked byte-for-byte after decompression.
+
+### Verified (by Claude, 2026-11-04)
+- **Headless probe client against the local server:**
+  - The snapshot at t19 was 57 KB compressed (4,284 entities); each tick was about 20 KB.
+  - The chant "war war" was applied by the server, and the word cloud picked from the server-sent profiles.
+- **Local browser** (`python3 -m http.server` on `build/web`, plus the local server):
+  - Connected, received the world (t31, 8,080 entities), drew it full-window, and kept updating.
+  - Word-cloud taps cast "invade hunger" to the server, which applied it.
+- **Live: `https://noema.dkentbrown.dev` through the tunnel** received the world (t108, 29,397 entities) and drew it.
+- **Headers:** `/index.wasm` returns `application/wasm` + `gzip`.
+- **Server load:** ticks grew to 1.5–2 s at ~17.7k live dots and ~7.7k blocks (t110, about 9 minutes in). That fits the 5 s tick but would not fit the old 1 s tick.
+
+### Running it
+```
+cd ~/Desktop/dkentbrown.dev/Dots/dots
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path . res://server.tscn -- --listen 8910 --tick-seconds 5
+cloudflared tunnel --config ~/.cloudflared/noema.yml run noema
+```
+Then open https://noema.dkentbrown.dev. Without the server and tunnel running, the page loads but shows an empty planet and retries every 3 s.
+
+### Open / next
+- **No saving:** every server start is a fresh world.
+- **The world keeps growing.** Population, snapshot size and tick cost climb with it; nothing caps it yet.
+- **Smaller updates:** each tick resends every changed entity in full, and the snapshot is everything.
+- The page title is still "Dots" (the project name).
+- Not yet tried on a phone browser or in Safari.
+- **Accounts** (Firebase, Google + Apple) → a colony per player → saving → a host that isn't the Mac.
+- Still open from before: the sky jank and the tall towers (stack index 39).
+- The RECONCILIATION note for WebSockets replacing the HTTP endpoints.
+
+### Same day, later: fog, real days, Noema branding, the play banner
+- **Fog of war is back on:** `TEST_FIELD_REVEAL_ALL = false` (world_sim.gd). The server works out the fog, from colony 0's point of view; one fog per player is needed once each player has a colony.
+- **The real 24-hour day:** `SUN_FAST_DAY = false` (main.gd). Dustan chose 24 h over 1 h or 10 min.
+- **Noema branding replaces Godot's** (Dustan: "replace as much of the splash as possible"):
+  - `web/shell.html` is the export's custom HTML shell (`html/custom_html_shell`): a night background, a lit planet with colony dots, the NOEMA wordmark, "What will they remember?", chant words drifting in, a thin progress line ("Downloading the world · N%" → "Waking the colonies"), then a fade into the game. The engine wiring follows Godot 4.6's stock shell, minus the service-worker branch (no threads, no PWA).
+  - The engine's own splash shows no image (`boot_splash/show_image=false`), on the same night colour (`#07080d`).
+  - The project icon is now `noema_icon.svg` (favicon and touch icon); Godot's `icon.svg` stays in the repo, unused.
+  - `config/name.web="Noema"` names the project "Noema" only in web builds, so the editor's `user://` folder (which the MCP plugin uses) is unchanged. The tab title stays "Noema" after the engine starts (checked).
+- **`export_presets.cfg` is now committed** (it was gitignored). It holds no secrets in Godot 4, and the deploy depends on it.
+- **`web/deploy.sh`:** gzip runs with `-n`, so an unchanged engine is byte-identical and isn't re-uploaded (that deploy took 2 s).
+- **Headless Godot runs strip the MCP autoloads from `project.godot`** when they exit (the plugin cleaning up after itself). Back `project.godot` up before an export or server run and restore it afterwards.
+- **Site (`portfolio-site`, pushed to `main` as `472fca1`, live on Pages):** a burgundy banner at the top of `/work/noema/` ("v0.1 / Live now · The world is listening. Step in and give a colony its first words. · Play in your browser →") links to https://noema.dkentbrown.dev. Checked live at desktop and phone widths; the click lands on the game.
+
+### Same day, later: CCE colours back; your colony shimmers
+Dustan: "It's hard to know what colony is mine." Bible §16 leaves colony colour and visual identity open; this is a first answer.
+- **Colours follow CCE again:** `TEST_FIELD_DISCRETE_COLORS = false`. Dots are tinted toward their CCE mix, walls are teal, and fogged colonies are grey. The 50-colour field palette now shows only in the HUD names.
+- **Your colony shimmers** (Dustan chose this over a ground-ring beacon, or both). Your own dots, blocks and walls pulse together on a 2 s cycle: their glow swells to 2.2× and whitens 35% at the peak. Everyone else's are steady, and the colours themselves don't change.
+  - **Shader:** `entity.gdshader` reads the flag from the alpha of the instance custom data (the emission colour's alpha, unused before). `shimmer_period`, `shimmer_strength` and `shimmer_whiten` are uniforms.
+  - **Client:** `main.gd` `_entity_colors` sets that alpha to 1 for a dot whose `colony` is `LOCAL_COLONY`, and 0 for everything else (specks and marks included).
+  - **Wire:** `world_stream.gd` adds `FLAG_OWN` (8). `world_mirror.gd` stores `colony = LOCAL_COLONY` on those dots only; other colonies' dots carry no colony id.
+- Checked in the browser on a fresh world: your colony visibly pulses between frames a second apart; no console errors. Revealed neighbours' CCE tints were not checked yet (none met by t5). Note that with the real 24 h day, your colony may be on the night side when you open the game.
+
+### Same day, later: walls go up where a colony is attacked
+Dustan: "I'm not seeing the walling behavior anymore." Telemetry agreed: wall banners ran 74–435 per 100 ticks in every run up to 10-28 06:01 and 0–32 in every run since; the live world had 25 in 1,275 ticks.
+- **Cause: trust (`6b8b0db`, 10-28).** Walls need an enemy *sighting*, and observe only counts a foreign dot as an enemy when the observer's attack weight ≥ trust × `BETRAYAL_ATTACK` (`_will_target`). Bulwarks carry ~0.15 attack, so a few ticks of peaceful contact (trust ≳ 0.19) and they no longer see any neighbour as an enemy. By t100 bulwark 9 trusted its neighbours at 0.75–0.82 (including warband 38, which trusted it back and never attacked). The Shape D odds per roll were unchanged (~0.10–0.15 for bulwarks); the rolls themselves dried up (2,147 for one bulwark in the last pre-trust run, 71 for all five in the live one).
+- **Fix (Dustan chose "wall when attacked" over "wary of non-allies"): attack alarms.** `_initiate_combat` raises an alarm for the *defending* colony at the contact cell, carrying the attacker's direction (`_drop_attack_alarm`). Its dots within `ATTACK_ALARM_RADIUS` (15 cells) that roll defend and have no sighting of their own roll Shape D toward the attacker instead — once per dot per alarm (`tried`); a new attack at the same cell refreshes the alarm and clears `tried`. Alarms last `ATTACK_ALARM_TTL` (6) of the colony's own ticks (`_tick_attack_alarms`, after `_tick_wall_banners`). The sighting path is unchanged and still comes first; attack targeting and trust are untouched.
+- `shape_d_roll` telemetry gains `"source"`: `"sight"` or `"attacked"`.
+- **First test (run `1793819615`, 288 headless ticks):** alarms fired 7,018 tries but founded only 7 walls. The attacked colonies were warbands, markers and spiralers, whose Shape D odds are ~0.1% (defend × colony build × 2); no bulwark was attacked at all.
+- **So alarm tries get a floor (Dustan: "raise the odds"):** `ATTACK_ALARM_WALL_FLOOR = 0.08` — an alarm-triggered try succeeds at least 8% of the time, whatever the culture. Sighting-triggered tries keep the old formula, so unprovoked walling is still a bulwark trait. 0.08 is a placeholder: ~2 walls per tick world-wide on the first test's try count, in the pre-trust range.
+- Separate, not fixed: in the 11-04 live world three of the five bulwarks grew to the 500 cap by ~t100 and then died of old age by ~t775 with no attacks — a boom-and-bust that also removes wallers.
+
+### Same day, later: "Receiving the world" while the snapshot downloads
+Dustan saw a blank sphere and thought the world was gone. It was live; the client was still waiting for the first snapshot. By t190 the world is ~38k entities and the Mac's uplink is slow, so the sphere sat empty for somewhere between 10 and 50 s after the loading page faded, with nothing on screen to say so. (He may also have loaded during one of the server restarts, when there was no server at all.)
+- **`main.gd`, server mode only:** a centred line of spaced small capitals near the top of the screen, in the loading page's style, breathing gently. It shows "RECEIVING THE WORLD" until the first snapshot arrives, and "THE WORLD IS OFFLINE · TRYING AGAIN" whenever the socket has closed and no snapshot has arrived since (the client retries every 3 s, as before). Built in code (`_build_net_status`, `_update_net_status`); `_net_down` is set on `STATE_CLOSED` and cleared by a snapshot.
+- Checked on the live site: the line shows during the wait and goes once the world draws. The offline text was not seen live (that would have meant stopping the world).
+- The real fix for the wait is a smaller first download (still open).
+
+## 2026-11-05 — Balance read of the 11-04 live world; soul made to matter
+### What the live world showed (run `1793820229`)
+- It only ran ~4 hours: the Mac went to clamshell sleep at 16:23 and woke 07:56, so 2,532 ticks, not a day's ~17k.
+- 20 of 50 colonies died out, mostly NOT in combat. Every always-active action culture (markers, builders, gatherers, warbands, bulwarks) died; cohesive/dispersive/confront all sat at the 500 cap. Cause: chants top up only the chanted verb, and birth dilution shrank every other verb (reproduce included) each generation, so reproduce fell to 1–2% of rolls and colonies dropped below replacement (lifetime 100). Mode cultures lean on the "modes" layer, outside the selection pool, so they never paid it.
+- Your colony 0 was autochanted "move" 463 times by the field driver (it plays colony 0 as the "movers" archetype); move reached 87% of rolls and the colony fell 500 → 17 with only 22 fights lost. **Still open:** stop the field driver chanting into colony 0.
+- Soul limited nothing: never spent (only 1%/tick decay). Its chant multiplier only sped a lean to the 1.0 clamp, and its uniform dilution couldn't change linear selection odds. 6,300 specks sat uncollected.
+### The change (Dustan chose A + B of five sketched options)
+- **A — drift to a baseline:** `child = DRIFT_BASELINE + (parent − DRIFT_BASELINE) × dilution` for verbs and modes (`DRIFT_BASELINE = TEST_FIELD_BASE`). Low soul washes a culture back toward balance; high soul holds it.
+- **B — monument blocks cost soul:** `BUILD_SOUL_COST = 1` via `_pay_build_soul`; refused builds do nothing and are counted in the snapshot's `unpaid_builds`. Walls stay free.
+- See RECONCILIATION S.c "Update 2026-11-05".
+### Test (1,200 headless ticks in an isolated copy of the project, so the live telemetry stayed clean)
+| | before (live, t1200) | after (test, t1200) |
+|---|---|---|
+| colonies alive | 35 | 49 |
+| colonies at the 500 cap | 15 | 36 |
+| living dots | 13,062 | 23,288 |
+| blocks | 11,514 | 8,500 |
+| soul (all colonies) | 3,459 | 512 |
+| reproduce share of specialist rolls | 3–5% | 14–17% |
+- Every culture now survives; the one death (movers c10) was conquest — warband 48 beat it 191 times.
+- **Side effects to watch:** (1) the world fills up — 36 colonies at the cap, ticks ~3.3 s (sharing the CPU with the live server) against the 5 s budget, and a bigger first download; (2) building now eats soul as fast as it comes in, so the chant multiplier has all but gone (average 1.11× after t600, 5% of chants at 2× or more); (3) builder colonies are mostly broke — 217,803 builds refused, 54k by builders c6 alone — and hold 73–349 blocks each.

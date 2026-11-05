@@ -232,6 +232,11 @@ Shipped values (all placeholders): gain 4.0, half 100, draw 0.25 → 0 soul = 1.
 - **New tuning surface (needs MULTIPLE runs):** the band where low soul actually loses ground to dilution but high soul holds is governed by `DILUTION_MIN`, `SOUL_DILUTION_HALF`, `SOUL_DECAY_RATE`, and the autochant refill rate together. `SOUL_DECAY_RATE` is the most likely to bite. Telemetry now emits per-colony `dilution` in the snapshot for reading the refill-vs-drift contest.
 `DECISION: CODE (revised) — soul is a standing level driving potency + dilution, decaying passively; chant-draw removed. Shipped to branch, unmerged, awaiting playtest tuning. Fold into the same v0.5 "Resources and Soul" section.`
 
+**⮑ Update 2026-11-05 (Dustan) — dilution drifts toward a baseline; building costs soul.**
+- **The 07-28 dilution never moved a culture.** It scaled every verb by the same factor, and under T2.c's linear selection P(k) = w_k / Σw a uniform scale leaves every probability unchanged: a soul-poor raider stayed exactly as aggressive. Worse, chants top up only the chanted verb, so the *unchanted* verbs (reproduce among them) shrank toward 0 every generation; in the 11-04 live run single-verb cultures' reproduce share fell to 1–2% and 20 of 50 colonies died out. **Fix:** verbs and modes now dilute toward `DRIFT_BASELINE` (the field floor: 0.06 per verb, reproduce 0.25, observe 0.12) — `child = base + (parent − base) · dilution`, as dials already did toward NEUTRAL_CCE. Low soul now really does wash a culture back toward balance (the §9 "drifts toward neutral baseline", and the §13 raider-erosion this section promised); high soul holds it.
+- **Build consumes soul** (the first of the "designed but never built" consumers): each monument block costs `BUILD_SOUL_COST` = 1 from the builder's colony pool; an unaffordable build roll does nothing (snapshot `unpaid_builds` counts them). Walls stay free. Soul now has a real sink beyond decay, and monuments become a visible record of gathering.
+`DECISION: CODE — drift-to-baseline dilution and soul-priced monument blocks. Both PLACEHOLDER-tuned; fold into the v0.5 "Resources and Soul" section.`
+
 ---
 
 # CLIENT / UX (the player-facing surface)

@@ -3,8 +3,6 @@
 *.translation
 *.import
 
-# Export presets
-export_presets.cfg
 
 # macOS
 .DS_Store
@@ -31,3 +29,9 @@ telemetry.jsonl
 
 # Inspection/plan reports (read directly by planning layer, not committed)
 code_report.md
+
+# Web export output
+build/
+
+# Wrangler's local cache (holds the Cloudflare account id and email)
+web/.wrangler/

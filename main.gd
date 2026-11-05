@@ -40,13 +40,36 @@ const PAN_GESTURE_SPEED = 30.0
 # among the stars and the whole sky wheels once per day, as seen from a spinning planet.
 const SUN_DAY_SECONDS = 86400.0
 const SUN_TEST_DAY_SECONDS = 20.0
-const SUN_FAST_DAY = true
+const SUN_FAST_DAY = false
 const SUN_DECLINATION_DEG = 23.4
 
 const TICK_SPEED = 1.0
 var tick_timer = 0.0
 
+# Server mode: instead of running its own WorldSim, the client connects to the world server
+# (server.gd --listen) and draws a WorldMirror the server fills (world_stream.gd). On in any web
+# build; USE_SERVER turns it on in the editor too. A web page served from localhost (or the
+# editor) connects to SERVER_URL_LOCAL; the deployed page to SERVER_URL_PUBLIC, the Cloudflare
+# Tunnel in front of the same server.
 const USE_SERVER = false
+const SERVER_URL_LOCAL = "ws://127.0.0.1:8910"
+const SERVER_URL_PUBLIC = "wss://noema-server.dkentbrown.dev"
+const RECONNECT_SECONDS = 3.0
+const NET_INBOUND_BUFFER_BYTES = 1024 * 1024   # holds a few world_stream chunks
+const NET_MAX_QUEUED_PACKETS = 8192
+const WorldMirror = preload("res://world_mirror.gd")
+const WorldStream = preload("res://world_stream.gd")
+var _net: WebSocketPeer = null
+var _net_assembler = null
+var _net_retry = 0.0
+var _framed = false   # the camera has been framed on the colony (server mode: after the first snapshot)
+# Server mode: a quiet line at the top of the screen while there is no world to draw — the
+# first snapshot can take tens of seconds over the Mac's uplink, and a dead server otherwise
+# looks the same as an empty planet. Hidden once a snapshot arrives; back if the link drops.
+const NET_STATUS_WAITING = "RECEIVING THE WORLD"
+const NET_STATUS_OFFLINE = "THE WORLD IS OFFLINE · TRYING AGAIN"
+var _net_status: Label = null
+var _net_down = false  # the connection closed or failed and no snapshot has arrived since
 const WordCloud = preload("res://word_cloud.gd")
 # Batched drawing (separation stage 5): one MultiMeshInstance3D per entity KIND instead of a mesh
 # node per entity — tens of thousands of nodes become five draws. Each kind keeps a dense array of
@@ -94,8 +117,14 @@ var single_touch_index = -1
 
 func _ready():
 	_build_batches()
-	sim = WorldSim.new()
-	sim.setup()
+	if _use_server():
+		sim = WorldMirror.new()
+		_net_assembler = WorldStream.Assembler.new()
+		_build_net_status()
+		_net_connect()
+	else:
+		sim = WorldSim.new()
+		sim.setup()
 	camera.near = CAMERA_NEAR
 	_focus_on_colony()
 	_update_camera()
@@ -127,21 +156,28 @@ func _notification(what: int) -> void:
 	# to the passive clock when it loses it (bible §15.3; see world_sim.gd colony clocks).
 	if sim == null:
 		return
-	if what == NOTIFICATION_APPLICATION_FOCUS_IN:
-		sim.set_colony_active(WorldSim.LOCAL_COLONY, true)
-	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
-		sim.set_colony_active(WorldSim.LOCAL_COLONY, false)
+	if what != NOTIFICATION_APPLICATION_FOCUS_IN and what != NOTIFICATION_APPLICATION_FOCUS_OUT:
+		return
+	var active = what == NOTIFICATION_APPLICATION_FOCUS_IN
+	if _use_server():
+		_net_send({ "active": active })
+	else:
+		sim.set_colony_active(WorldSim.LOCAL_COLONY, active)
 
 func _process(delta):
 	zoom_distance = lerp(zoom_distance, zoom_target, ZOOM_SMOOTH * delta)
 	zoom_distance = max(zoom_distance, ZOOM_MIN)
 	_update_camera()
 	_update_sun()
-	tick_timer += delta
-	if tick_timer >= TICK_SPEED:
-		tick_timer = 0.0
-		sim.tick()
-		_update_hud()
+	if _use_server():
+		_net_poll(delta)
+		_update_net_status()
+	else:
+		tick_timer += delta
+		if tick_timer >= TICK_SPEED:
+			tick_timer = 0.0
+			sim.tick()
+			_update_hud()
 	_sync_views()
 
 func _update_hud():
@@ -201,15 +237,87 @@ func _update_hud():
 # --- Chant input ---
 
 func _process_input(text: String):
-	if USE_SERVER:
-		push_warning("USE_SERVER enabled but server is not implemented")
-		_send_chant_to_server(text)
+	if _use_server():
+		_net_send({ "chant": text })
 	else:
 		sim._process_chant_locally(text)
 	_update_hud()
 
-func _send_chant_to_server(_text: String):
-	pass
+# --- Server connection (server mode) ---
+
+func _use_server() -> bool:
+	return USE_SERVER or OS.has_feature("web")
+
+func _server_url() -> String:
+	if OS.has_feature("web"):
+		var host = str(JavaScriptBridge.eval("location.hostname", true))
+		if host != "localhost" and host != "127.0.0.1":
+			return SERVER_URL_PUBLIC
+	return SERVER_URL_LOCAL
+
+func _net_connect() -> void:
+	_net = WebSocketPeer.new()
+	_net.inbound_buffer_size = NET_INBOUND_BUFFER_BYTES
+	_net.max_queued_packets = NET_MAX_QUEUED_PACKETS
+	var url = _server_url()
+	var err = _net.connect_to_url(url)
+	print("[net] connecting to %s%s" % [url, "" if err == OK else " failed (error %d)" % err])
+	_net_retry = RECONNECT_SECONDS
+
+func _net_poll(delta: float) -> void:
+	_net.poll()
+	match _net.get_ready_state():
+		WebSocketPeer.STATE_OPEN:
+			while _net.get_available_packet_count() > 0:
+				var msg = _net_assembler.feed(_net.get_packet())
+				if msg != null:
+					sim.apply(msg)
+					if msg.get("kind") == "snapshot":
+						_net_down = false
+						print("[net] world received: t%d, %d entities" % [sim._tick_num, sim.dot_data.size() + sim.speck_data.size() + sim.mark_data.size()])
+						_net_send({ "active": get_window().has_focus() })
+						if not _framed:
+							_framed = true
+							_focus_on_colony()
+					_update_hud()
+		WebSocketPeer.STATE_CLOSED:
+			_net_down = true
+			_net_retry -= delta
+			if _net_retry <= 0.0:
+				_net_assembler = WorldStream.Assembler.new()
+				_net_connect()
+
+func _build_net_status() -> void:
+	# Spaced small capitals in the loading page's style (web/shell.html), on the dark sky above
+	# the planet rather than over it.
+	var font = FontVariation.new()
+	font.base_font = ThemeDB.fallback_font
+	font.spacing_glyph = 3
+	var settings = LabelSettings.new()
+	settings.font = font
+	settings.font_size = 15
+	settings.font_color = Color(0.85, 0.87, 0.95)
+	_net_status = Label.new()
+	_net_status.label_settings = settings
+	_net_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_net_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_net_status.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	_net_status.offset_top = 48
+	_net_status.text = NET_STATUS_WAITING
+	$UI.add_child(_net_status)
+
+func _update_net_status() -> void:
+	var waiting = _net_down or not sim.has_world
+	_net_status.visible = waiting
+	if not waiting:
+		return
+	_net_status.text = NET_STATUS_OFFLINE if _net_down else NET_STATUS_WAITING
+	# A slow breathing pulse, so a long wait still reads as alive.
+	_net_status.modulate.a = 0.85 + 0.15 * sin(Time.get_ticks_msec() / 1000.0 * 2.0)
+
+func _net_send(msg: Dictionary) -> void:
+	if _net != null and _net.get_ready_state() == WebSocketPeer.STATE_OPEN:
+		_net.send(var_to_bytes(msg))
 
 func _colony_screen_point():
 	# Where a cast chant flies: your colony's centre on screen, or null when it's on the far side
@@ -361,13 +469,21 @@ func _entity_transform(id: int) -> Transform3D:
 	return Transform3D(b, mark_dir * WorldSim.SPHERE_RADIUS)
 
 func _entity_colors(id: int) -> Array:
-	# [albedo, emission] in sRGB.
+	# [albedo, emission] in sRGB. The emission's alpha is the "yours" flag entity.gdshader reads:
+	# 1 for your own colony's dots, blocks and walls (they shimmer), 0 for everything else.
+	var c: Array
+	var own = 0.0
 	if sim.dot_data.has(id):
-		return sim._dot_colors(id)
-	if sim.speck_data.has(id):
-		return [SPECK_COLOR, SPECK_COLOR]
-	var c = sim.mark_data[id]["color"]
-	return [c, c]
+		c = sim._dot_colors(id)
+		if sim.dot_data[id].get("colony") == WorldSim.LOCAL_COLONY:
+			own = 1.0
+	elif sim.speck_data.has(id):
+		c = [SPECK_COLOR, SPECK_COLOR]
+	else:
+		c = [sim.mark_data[id]["color"], sim.mark_data[id]["color"]]
+	var emission: Color = c[1]
+	emission.a = own
+	return [c[0], emission]
 
 func _surface_basis(dir: Vector3) -> Basis:
 	# y = the surface normal; x/z span the tangent plane against a fixed world reference axis.
