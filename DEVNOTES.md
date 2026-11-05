@@ -2748,3 +2748,25 @@ Dustan saw a blank sphere and thought the world was gone. It was live; the clien
 - **`main.gd`, server mode only:** a centred line of spaced small capitals near the top of the screen, in the loading page's style, breathing gently. It shows "RECEIVING THE WORLD" until the first snapshot arrives, and "THE WORLD IS OFFLINE · TRYING AGAIN" whenever the socket has closed and no snapshot has arrived since (the client retries every 3 s, as before). Built in code (`_build_net_status`, `_update_net_status`); `_net_down` is set on `STATE_CLOSED` and cleared by a snapshot.
 - Checked on the live site: the line shows during the wait and goes once the world draws. The offline text was not seen live (that would have meant stopping the world).
 - The real fix for the wait is a smaller first download (still open).
+
+## 2026-11-05 — Balance read of the 11-04 live world; soul made to matter
+### What the live world showed (run `1793820229`)
+- It only ran ~4 hours: the Mac went to clamshell sleep at 16:23 and woke 07:56, so 2,532 ticks, not a day's ~17k.
+- 20 of 50 colonies died out, mostly NOT in combat. Every always-active action culture (markers, builders, gatherers, warbands, bulwarks) died; cohesive/dispersive/confront all sat at the 500 cap. Cause: chants top up only the chanted verb, and birth dilution shrank every other verb (reproduce included) each generation, so reproduce fell to 1–2% of rolls and colonies dropped below replacement (lifetime 100). Mode cultures lean on the "modes" layer, outside the selection pool, so they never paid it.
+- Your colony 0 was autochanted "move" 463 times by the field driver (it plays colony 0 as the "movers" archetype); move reached 87% of rolls and the colony fell 500 → 17 with only 22 fights lost. **Still open:** stop the field driver chanting into colony 0.
+- Soul limited nothing: never spent (only 1%/tick decay). Its chant multiplier only sped a lean to the 1.0 clamp, and its uniform dilution couldn't change linear selection odds. 6,300 specks sat uncollected.
+### The change (Dustan chose A + B of five sketched options)
+- **A — drift to a baseline:** `child = DRIFT_BASELINE + (parent − DRIFT_BASELINE) × dilution` for verbs and modes (`DRIFT_BASELINE = TEST_FIELD_BASE`). Low soul washes a culture back toward balance; high soul holds it.
+- **B — monument blocks cost soul:** `BUILD_SOUL_COST = 1` via `_pay_build_soul`; refused builds do nothing and are counted in the snapshot's `unpaid_builds`. Walls stay free.
+- See RECONCILIATION S.c "Update 2026-11-05".
+### Test (1,200 headless ticks in an isolated copy of the project, so the live telemetry stayed clean)
+| | before (live, t1200) | after (test, t1200) |
+|---|---|---|
+| colonies alive | 35 | 49 |
+| colonies at the 500 cap | 15 | 36 |
+| living dots | 13,062 | 23,288 |
+| blocks | 11,514 | 8,500 |
+| soul (all colonies) | 3,459 | 512 |
+| reproduce share of specialist rolls | 3–5% | 14–17% |
+- Every culture now survives; the one death (movers c10) was conquest — warband 48 beat it 191 times.
+- **Side effects to watch:** (1) the world fills up — 36 colonies at the cap, ticks ~3.3 s (sharing the CPU with the live server) against the 5 s budget, and a bigger first download; (2) building now eats soul as fast as it comes in, so the chant multiplier has all but gone (average 1.11× after t600, 5% of chants at 2× or more); (3) builder colonies are mostly broke — 217,803 builds refused, 54k by builders c6 alone — and hold 73–349 blocks each.

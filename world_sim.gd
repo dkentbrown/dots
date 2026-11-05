@@ -29,6 +29,15 @@ const DOT_LIFETIME = 100
 const DILUTION_MIN = 0.7           # inheritance rate at zero soul (the bible's default rate)
 const DILUTION_MAX = 1.0           # inheritance rate as soul -> infinity (full persistence)
 const SOUL_DILUTION_HALF = 100.0   # soul at which half the min->max range is recovered
+# What a culture drifts back toward between generations (verbs and modes; dials use NEUTRAL_CCE):
+#   child = baseline + (parent - baseline) * dilution
+# The playtest field's shared floor — a bit of every verb, reproduce 0.25, observe 0.12 — so a
+# culture left unfed fades to a balanced colony that still breeds, not to all-zero weights.
+const DRIFT_BASELINE = TEST_FIELD_BASE
+# Building costs soul (2026-11-05): each MONUMENT block takes this much from the builder's colony
+# pool; with too little soul the build roll does nothing. Walls (_create_wall_block) stay free so
+# defence never waits on gathering. PLACEHOLDER.
+const BUILD_SOUL_COST = 1
 # CCE blending (bible §12) — cultural contact between colonies, through two channels:
 #  1. CONTACT (_tick_blending): each tick, every pair of LIVING dots from different colonies
 #     within BLEND_RADIUS cells steps toward each other by BLEND_RATE of the gap, across every
@@ -146,6 +155,7 @@ const WALL_MESH_SIZE = Vector3(0.031, 0.003, 0.0155) / WORLD_SCALE  # stage (c):
 const WALL_COLOR = Color(0.0, 0.95, 0.8)  # bright teal — distinguishes fence segments from the pale defend-blue of monument blocks; not a CCE hue, so no semantic clash
 var block_counts = {}  # colony_id -> current block count
 var soul_pool = {}   # colony_id -> accumulated soul units
+var _unpaid_builds = {}  # colony -> monument builds refused for lack of soul since the last snapshot
 
 # Build banners (anchored at a placed block, attracting nearby builders)
 const BUILD_BANNER_RADIUS = 15
@@ -876,8 +886,10 @@ func tick() -> void:
 			"move_modes": _move_mode_counts.duplicate(true),
 			"blend": _blend_counts.duplicate(true),
 			"marks": surface_marks.size(),
-			"passive": colony_period.keys().filter(func(c): return colony_period[c] > 1)
+			"passive": colony_period.keys().filter(func(c): return colony_period[c] > 1),
+			"unpaid_builds": _unpaid_builds.duplicate(),
 		})
+		_unpaid_builds.clear()
 		_blend_counts.clear()
 	# Trust record: every pair at 0.1 or more, keyed "truster>trusted".
 	if _tick_num % TRUST_SNAPSHOT_INTERVAL == 0:
@@ -1809,6 +1821,16 @@ func _drift(dot: int, dir: Vector3, range_val: float, spiral: float) -> void:
 
 # --- Build (blocks) ---
 
+func _pay_build_soul(colony: int) -> bool:
+	# A monument block's price (BUILD_SOUL_COST), taken from the colony's pool. False — and
+	# nothing taken — when the pool can't cover it; counted for the snapshot's "unpaid_builds".
+	var soul = soul_pool.get(colony, 0)
+	if soul < BUILD_SOUL_COST:
+		_unpaid_builds[colony] = _unpaid_builds.get(colony, 0) + 1
+		return false
+	soul_pool[colony] = soul - BUILD_SOUL_COST
+	return true
+
 func _execute_build(dot: int):
 	var my_colony = dot_data[dot]["colony"]
 	var my_dir = _dir_of(dot)
@@ -1876,6 +1898,8 @@ func _execute_build(dot: int):
 			# Skip this build tick (no-op) rather than racing the topmost-removal on that cell.
 			if combat_locked_cells.get(build_cell, 0) > 0:
 				return
+			if not _pay_build_soul(my_colony):
+				return
 			_create_block(build_cell, my_colony, dot_data[dot]["dot_id"], reason_str)
 			if nearest_banner["colony"] != my_colony:
 				# Shared monument: an ally's block, counted against the host banner's cap below.
@@ -1905,6 +1929,8 @@ func _execute_build(dot: int):
 	# re-founded with a fresh block budget is the remaining route to an unbounded cell;
 	# guard it with the same receiving-cell height notion used by the stack gate.
 	if _cell_height(my_cell) >= STACK_HEIGHT_SOFTCAP:
+		return
+	if not _pay_build_soul(my_colony):
 		return
 	_create_block(my_cell, my_colony, dot_data[dot]["dot_id"], "founder")
 	_drop_build_banner(my_cell, my_colony)
@@ -3081,12 +3107,19 @@ func _create_dot(direction: Vector3, parent, colony: int = LOCAL_COLONY, preset_
 		# low soul -> DILUTION_MIN (drifts). full_inheritance=true still forces 1.0 for any
 		# caller that wants it, but the reproduce path (_spawn_dot_near) no longer does.
 		var dilution = 1.0 if full_inheritance else _dilution_for_colony(colony)
+		# Verbs and modes dilute toward DRIFT_BASELINE ("a bit of everything"), not toward 0
+		# (2026-11-05). Scaling every weight by the same factor left the linear selection odds
+		# unchanged, so low soul never actually moved a culture; and with chants topping up only
+		# the chanted verb, everything else (reproduce included) shrank to nothing and single-
+		# minded colonies stopped breeding. Now a soul-poor culture washes back toward balance.
 		for layer in ["motion", "action", "modes"]:
 			if not cce.has(layer) or not parent_cce.has(layer):
 				continue
+			var baseline = DRIFT_BASELINE.get(layer, {})
 			for key in cce[layer]:
 				if parent_cce[layer].has(key):
-					cce[layer][key] = parent_cce[layer][key] * dilution
+					var base = baseline.get(key, 0.0)
+					cce[layer][key] = base + (parent_cce[layer][key] - base) * dilution
 		# Dials dilute toward their NEUTRAL_CCE baseline, not toward 0 (bible §9: drift is toward
 		# neutral). The verb/mode layers above have a 0.0 baseline, so plain scaling already is.
 		for key in cce["dials"]:
