@@ -9,6 +9,10 @@ extends Node
 #     --listen PORT      accept WebSocket clients on 127.0.0.1:PORT (a Cloudflare Tunnel or a
 #                        local client connects there) and stream the world to them
 #     --tick-seconds S   seconds per world tick (default TICK_SECONDS)
+#     --idle-tick-seconds S   seconds per world tick while no client is connected (default: same
+#                        as --tick-seconds). The world slows to a crawl when nobody is watching
+#                        (bible §11.2's passive ticks, world-wide), so a small burstable host
+#                        banks CPU while idle and spends it while someone plays.
 # Each tick prints one line: tick, live dots, blocks, specks, clients, and that tick's cost in ms.
 # Chants can be injected while it runs through res://chant.json, as with the client.
 #
@@ -27,6 +31,7 @@ var sim
 var _max_ticks = -1
 var _fast = false
 var _tick_seconds = TICK_SECONDS
+var _idle_tick_seconds = -1.0   # < 0: no idle slow-down
 var _timer = 0.0
 var _total_ms = 0.0
 var _tcp: TCPServer = null
@@ -45,10 +50,12 @@ func _ready() -> void:
 			port = int(args[i + 1])
 		elif args[i] == "--tick-seconds" and i + 1 < args.size():
 			_tick_seconds = float(args[i + 1])
+		elif args[i] == "--idle-tick-seconds" and i + 1 < args.size():
+			_idle_tick_seconds = float(args[i + 1])
 	sim = WorldSim.new()
 	sim.setup()
 	# Mark the run as headless in telemetry, right after its run_start record.
-	sim._telemetry({ "type": "headless", "max_ticks": _max_ticks, "fast": _fast, "listen": port, "tick_seconds": _tick_seconds })
+	sim._telemetry({ "type": "headless", "max_ticks": _max_ticks, "fast": _fast, "listen": port, "tick_seconds": _tick_seconds, "idle_tick_seconds": _idle_tick_seconds })
 	if port > 0:
 		_tcp = TCPServer.new()
 		var err = _tcp.listen(port, "127.0.0.1")
@@ -58,12 +65,18 @@ func _ready() -> void:
 		else:
 			# Nobody is watching until a client connects.
 			sim.set_colony_active(WorldSim.LOCAL_COLONY, false)
-	print("[server] world ready: %d colonies, %d entities, %s%s" % [sim.known_colonies.size(), sim.dots.size(), "fast" if _fast else "%.1f s ticks" % _tick_seconds, (", listening on 127.0.0.1:%d" % port) if _tcp else ""])
+	var idle_note = (" (%.0f s with nobody connected)" % _idle_tick_seconds) if _idle_tick_seconds > 0 else ""
+	print("[server] world ready: %d colonies, %d entities, %s%s%s" % [sim.known_colonies.size(), sim.dots.size(), "fast" if _fast else "%.1f s ticks" % _tick_seconds, idle_note, (", listening on 127.0.0.1:%d" % port) if _tcp else ""])
 
 func _process(delta: float) -> void:
 	_poll_clients()
 	_timer += delta
-	if not _fast and _timer < _tick_seconds:
+	# With nobody connected, wait the idle interval instead. A client joining mid-wait makes
+	# the shorter interval apply at once, so the world wakes on the next frame.
+	var interval = _tick_seconds
+	if _idle_tick_seconds > 0 and _open_count() == 0:
+		interval = _idle_tick_seconds
+	if not _fast and _timer < interval:
 		return
 	_timer = 0.0
 	var t0 = Time.get_ticks_usec()

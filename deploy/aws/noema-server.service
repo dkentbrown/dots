@@ -1,0 +1,16 @@
+[Unit]
+Description=Noema world server (headless Godot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=noema
+Environment=HOME=/home/noema
+WorkingDirectory=/opt/noema
+# 5 s ticks while anyone is connected, 60 s while nobody is (server.gd --idle-tick-seconds).
+ExecStart=/usr/local/bin/godot --headless --path /opt/noema res://server.tscn -- --listen 8910 --tick-seconds 5 --idle-tick-seconds 60
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

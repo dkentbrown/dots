@@ -1,0 +1,14 @@
+[Unit]
+Description=Cloudflare Tunnel for the Noema world server (noema-server.dkentbrown.dev)
+After=network-online.target noema-server.service
+Wants=network-online.target
+
+[Service]
+# /etc/cloudflared/noema.yml names the tunnel, its credentials file and the ingress to
+# http://127.0.0.1:8910. Neither file is in the repo.
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --config /etc/cloudflared/noema.yml run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
