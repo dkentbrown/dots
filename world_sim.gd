@@ -1142,6 +1142,16 @@ func _tick_blending() -> void:
 		if not living.has(cell):
 			living[cell] = []
 		living[cell].append(dot)
+	# cell -> its only colony, or -1 when it holds several. Two cells holding one and the same
+	# colony have no pair to blend, so they are skipped whole: inside a colony that is most cells.
+	var cell_colony = {}
+	for cell in living:
+		var only = dot_data[living[cell][0]]["colony"]
+		for d in living[cell]:
+			if dot_data[d]["colony"] != only:
+				only = -1
+				break
+		cell_colony[cell] = only
 	var touched = {}
 	var contact_pairs = {}  # Vector2i(lower colony, higher colony) -> true: touched this tick (trust)
 	for key in living:
@@ -1155,6 +1165,9 @@ func _tick_blending() -> void:
 					continue
 				var neighbor = Vector2i((key.x + du + GRID_RES) % GRID_RES, ny)
 				if not living.has(neighbor):
+					continue
+				var cc = cell_colony[key]
+				if cc != -1 and cc == cell_colony[neighbor]:
 					continue
 				var there = living[neighbor]
 				var same_cell = du == 0 and dv == 0
@@ -2054,34 +2067,15 @@ func _execute_observe(dot: int) -> void:
 				best_speck_dist = d
 				speck_entry = { "pos": speck_data[speck]["dir"], "node": speck }
 
-	# Ally: nearest same-colony dot (excluding self and blocks)
-	var ally_entry = null
-	var ally = _find_nearest_ally_in_radius(my_dir, my_colony, radius, dot)
-	if ally != null:
-		ally_entry = { "pos": _dir_of(ally), "dot": ally }
-
-	# Banner: nearest active same-colony build banner within radius
-	# (no build_banners_used filter — observe is sensing, not committing)
-	var banner_entry = null
-	var best_banner_dist = radius_sq + 1
-	for banner in build_banners:
-		if banner["colony"] != my_colony:
-			continue
-		if banner["ticks_remaining"] <= 0:
-			continue
-		var d = _torus_cell_dist_sq(my_cell, banner["cell"])
-		if d <= radius_sq and d < best_banner_dist:
-			best_banner_dist = d
-			banner_entry = { "pos": _cell_to_dir(banner["cell"]), "cell": banner["cell"] }
-
-	# Only entries mapped in OBSERVE_MOVE_MAP are consumed today (speck -> gather).
-	# enemy / ally / banner are sensed and stored but dormant; no consumer yet
-	# (combat-walls design pending, see DEVNOTES 2026-05-13).
+	# Ally and banner are NOT sensed (2026-11-17): nothing reads them, and the ally search alone
+	# (_find_nearest_ally_in_radius over the whole radius) was about a fifth of a full world's tick.
+	# The slots stay, null, for when a consumer arrives — sense them again then.
+	# Read today: speck (gather, via OBSERVE_MOVE_MAP) and enemy (attack, walls, confront).
 	dot_data[dot]["pending_observe"] = {
 		"enemy": enemy_entry,
 		"speck": speck_entry,
-		"ally": ally_entry,
-		"banner": banner_entry,
+		"ally": null,
+		"banner": null,
 	}
 
 func _is_at_or_adjacent(a: Vector2i, b: Vector2i) -> bool:
@@ -2754,9 +2748,12 @@ func _check_fog_of_war():
 	# Cheap early exit: known set size matches revealed set size
 	if revealed_colonies.size() >= known_colonies.size():
 		return
+	# Look outward from LOCAL_COLONY's few hundred entities, not inward from every other one
+	# (2026-11-17: the inward scan was ~8% of a full world's tick): collect the unrevealed
+	# entities in the 3x3 window around each of ours.
+	var near = {}
 	for dot in dots:
-		var colony = dot_data[dot]["colony"]
-		if colony == LOCAL_COLONY or revealed_colonies.get(colony, false):
+		if dot_data[dot]["colony"] != LOCAL_COLONY:
 			continue
 		var key = _cell_key(_dir_of(dot))
 		for du in [-1, 0, 1]:
@@ -2768,12 +2765,21 @@ func _check_fog_of_war():
 				var neighbor = Vector2i((key.x + du + GRID_RES) % GRID_RES, ny)
 				if spatial_grid.has(neighbor):
 					for occupant in spatial_grid[neighbor]:
-						if dot_data.has(occupant) and dot_data[occupant]["colony"] == LOCAL_COLONY:
-							revealed_colonies[colony] = true
-							print("Colony %d revealed!" % colony)
-							_telemetry({ "type": "reveal", "tick": _tick_num, "colony": colony })
-							_update_all_dot_colors()
-							return
+						if dot_data.has(occupant):
+							var c = dot_data[occupant]["colony"]
+							if c != LOCAL_COLONY and not revealed_colonies.get(c, false):
+								near[occupant] = true
+	if near.is_empty():
+		return
+	# One reveal per tick, the first in `dots` order, as before.
+	for dot in dots:
+		if near.has(dot):
+			var colony = dot_data[dot]["colony"]
+			revealed_colonies[colony] = true
+			print("Colony %d revealed!" % colony)
+			_telemetry({ "type": "reveal", "tick": _tick_num, "colony": colony })
+			_update_all_dot_colors()
+			return
 
 # --- Spatial grid (incrementally maintained) ---
 
@@ -2871,6 +2877,8 @@ func _find_nearest_foreign_in_radius(dir: Vector3, my_colony: int, radius: int, 
 	return best
 
 func _find_nearest_ally_in_radius(dir: Vector3, my_colony: int, radius: int, exclude: int):
+	# Unused since 2026-11-17 (observe stopped sensing allies; see _execute_observe). Kept for
+	# when an ally sighting gets a consumer.
 	var key = _cell_key(dir)
 	var best = null
 	var best_dist = INF
