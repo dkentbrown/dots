@@ -2901,3 +2901,46 @@ Dustan: "lets do world saving" (phase A, step 1). Before this, every server star
 - One save file, no history; a daily copy would make "roll back the world" possible.
 - The bible (§14) puts world state in a database eventually. This file is the step before.
 - Next in phase A: a colony per player and no CPU colonies (needs sign-in, phase B).
+
+## 2026-11-17 (cont.) — Full-world ticks 36% faster, same world
+On AWS a full world (~22.5k dots) ticked in 7.7 s, over the 5 s budget. Dustan: "look into it", then "apply them". (Branch `session/2026-11-17-speed`, off `main` at `4ee3e99`.)
+
+### Where a full-world tick went (Mac, 23.4k dots, 2.0 s)
+| part | ms/tick | share |
+|---|---|---|
+| `_tick_all_dots` | 1,333 | 69% |
+| — `observe` (2,322 calls, 307 µs each) | 713 | 37% |
+| — `defend` / `build` / `move` | 162 / 104 / 85 | 18% |
+| — selection overhead in `_tick_dot` | ~200 | 10% |
+| `_tick_blending` | 324 | 17% |
+| `_check_fog_of_war` | 159 | 8% |
+| `_tick_autochant`, `_age_dots`, centres | 104 | 5% |
+
+The AWS t4g runs the same work about 3.5–4× slower than the Mac.
+
+### The three changes (none changes the simulation)
+1. **`_execute_observe` no longer senses allies or banners.**
+   - Nothing reads `pending_observe["ally"]` or `["banner"]`; only enemy and speck are consumed.
+   - The ally search scanned every same-colony dot in the whole observe radius (3 + 20 × observe cells), so in a colony at the cap it was most of observe's cost.
+   - The slots stay, set to null. `_find_nearest_ally_in_radius` is unused now; it's kept for a future consumer.
+2. **`_tick_blending` skips cell pairs holding one and the same colony.**
+   - It used to compare every dot pair in the window and discard the same-colony ones.
+   - It now notes each cell's only colony (or −1 for mixed) and skips the pair before the inner loops.
+3. **`_check_fog_of_war` looks outward from `LOCAL_COLONY`'s entities** (≤500), not inward from every other entity.
+   - It collects the unrevealed entities in the 3×3 window around each of ours.
+   - It then reveals the first of them in `dots` order, one per tick, as before.
+
+### Verified (by Claude, isolated copy, same seed)
+- **Full world** (saved t174, 8 ticks): `main` 2,003 ms/tick → 1,278 ms/tick (−36%).
+  - All 24,427 records came out identical, apart from the now-null ally/banner slots in 10,833 records.
+  - Every other saved field was identical.
+- **Fresh world, 140 ticks, seeded:**
+  - Both versions revealed colony 39 at t41 and colony 8 at t73, so the fog change reveals the same colonies on the same ticks.
+  - All 22,423 records came out identical apart from the ally/banner slots.
+  - Average tick 1,276 → 825 ms over the whole run (−35%).
+- **Expected on AWS:** ~4.9 s per full-world tick, inside the 5 s budget, just. The world keeps growing toward its ~25k cap.
+- **Next levers if needed:**
+  - a ring-ordered enemy search in observe (it scans the whole radius even after a near hit);
+  - the per-dot dictionaries `_tick_dot` builds for selection;
+  - a longer tick;
+  - a faster core (c7g, not a bigger t4g).

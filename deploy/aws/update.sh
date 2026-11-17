@@ -14,4 +14,4 @@ sudo -u noema HOME=/home/noema godot --headless --path /opt/noema --import >/dev
 sudo install -m 644 /opt/noema/deploy/aws/noema-server.service /etc/systemd/system/noema-server.service
 sudo systemctl daemon-reload
 sudo systemctl restart noema-server
-echo "Now at $(git log --oneline -1)"
+echo "Now at $(sudo -u noema git log --oneline -1)"
