@@ -2770,3 +2770,88 @@ Dustan saw a blank sphere and thought the world was gone. It was live; the clien
 | reproduce share of specialist rolls | 3–5% | 14–17% |
 - Every culture now survives; the one death (movers c10) was conquest — warband 48 beat it 191 times.
 - **Side effects to watch:** (1) the world fills up — 36 colonies at the cap, ticks ~3.3 s (sharing the CPU with the live server) against the 5 s budget, and a bigger first download; (2) building now eats soul as fast as it comes in, so the chant multiplier has all but gone (average 1.11× after t600, 5% of chants at 2× or more); (3) builder colonies are mostly broke — 217,803 builds refused, 54k by builders c6 alone — and hold 73–349 blocks each.
+
+## 2026-11-17 — Hosting on AWS: the world server moved off the Mac
+The live world now runs on an AWS machine, not Dustan's Mac. This replaces the 11-04 entry's "Server: his Mac" and its "Running it" section; everything else there still stands. (Branch `session/2026-11-17-aws`; the deploy files are in `6efc949`.)
+
+### Decisions (Dustan)
+- **AWS EC2 t4g.small**, about $17.50 a month. He turned down options costing $50 or more.
+- **Claude launches the machine and runs it over SSH.** Dustan signed in to AWS himself, using the `aws login` browser flow.
+- **SSH is open to any address, key only.** His hotspot changes its IPv4 address between connections, so an IP allow-list can't work.
+
+### The machine
+- **Server:** `noema-server`, a t4g.small (2 Arm vCPUs, 2 GB) in **us-east-2 (Ohio)**.
+  - The AWS account uses the "new AWS experience" (project "Moonshot Mode"), so everything regional has to live in us-east-2.
+- **System:** Ubuntu 24.04 Arm.
+- **Disk:** 20 GB gp3, encrypted, deleted with the machine.
+- **CPU credits: unlimited.** The machine never throttles; sustained CPU above the 20% baseline costs $0.04 per vCPU-hour.
+- **Metadata:** IMDSv2 required.
+- **Firewall `noema-server`:** inbound TCP 22 only. Password and keyboard-interactive login are off (Ubuntu's defaults, checked with `sshd -T`).
+  - The game itself needs no open port: the tunnel connects outward, and the server binds 127.0.0.1.
+- **Key pair `noema`:** the private key is `~/.ssh/noema_aws` on the Mac. Log in as `ubuntu`.
+- **Public IP:** find it with `aws ec2 describe-instances --profile noema --region us-east-2 --filters Name=tag:Name,Values=noema-server --query 'Reservations[].Instances[].PublicIpAddress' --output text`.
+  - It changes only if the machine is stopped and started. Nothing depends on it except SSH.
+- **Monthly cost:** about $12.25 instance + $1.60 disk + $3.65 public IPv4, plus any CPU surplus.
+
+### What's on it (`deploy/aws/`)
+- **`setup.sh`, run once over SSH:**
+  ```
+  ssh -i ~/.ssh/noema_aws ubuntu@<ip> 'BRANCH=<branch> bash -s' < deploy/aws/setup.sh
+  ```
+  - Installs Godot 4.6.3 (linux arm64) to `/usr/local/bin/godot` and cloudflared (the release `.deb`).
+  - Creates a `noema` system user and clones the repo to `/opt/noema`.
+  - Runs a first `--import`, installs the units, and starts the server.
+- **`noema-server.service`:**
+  - Runs `server.tscn --listen 8910 --tick-seconds 5 --idle-tick-seconds 60` as `noema`, with `Restart=always`.
+  - Ticks every 5 s while anyone is connected and every 60 s while nobody is, to save CPU credits.
+- **`noema-tunnel.service`:** `cloudflared tunnel --config /etc/cloudflared/noema.yml run`, with `Restart=always`.
+- **`/etc/cloudflared/` on the machine:**
+  - `noema.yml` is the Mac's config with `credentials-file: /etc/cloudflared/<tunnel-id>.json`.
+  - The tunnel credentials JSON, owned by root with mode 600, was copied with `scp`.
+  - **Neither file is in the repo**, and neither is `cert.pem`, which stays on the Mac and isn't needed to run the tunnel.
+- **`/etc/logrotate.d/noema`:** rotates `/opt/noema/telemetry.jsonl` daily and keeps 7 compressed days.
+  - It uses copytruncate, which is safe because the server reopens the file on every write.
+- **Updating:**
+  ```
+  ssh -i ~/.ssh/noema_aws ubuntu@<ip> 'BRANCH=main bash -s' < deploy/aws/update.sh
+  ```
+  - Fetches, does a hard reset to the branch, re-imports and restarts the server.
+  - **Restarting starts a fresh world** (there's no saving yet).
+  - The machine currently tracks `session/2026-11-17-aws`. After the merge, update with `BRANCH=main`; `update.sh` resets to whatever branch it's given.
+- **Logs:**
+  - `ssh … 'journalctl -u noema-server -f'`: the per-tick lines show live dots, blocks, clients and tick ms.
+  - `journalctl -u noema-tunnel` for the tunnel.
+  - Telemetry: `/opt/noema/telemetry.jsonl`.
+
+### The Mac
+- **Don't run the Mac's server or tunnel any more.** Two cloudflared connectors on one tunnel would split players between two different worlds.
+- `~/.cloudflared/` on the Mac still holds the credentials and `cert.pem`, which `cloudflared tunnel` admin commands need.
+- **The Mac's `telemetry.jsonl` no longer gets live-world runs.** To read the live world, copy the machine's file:
+  ```
+  scp -i ~/.ssh/noema_aws ubuntu@<ip>:/opt/noema/telemetry.jsonl /tmp/live.jsonl
+  ```
+
+### AWS tooling on the Mac
+- **AWS CLI 2.40** and **uv 0.13** are in `~/.local/bin`; `~/.zshenv` puts that folder on PATH.
+- **Profile `noema`, region us-east-2.**
+  - Credentials come from `aws login --profile noema`. They last 12 h and renew on their own for up to 90 days; after that, run `aws login` again.
+  - The CLI signs in as the `AccountFullAccessRole`.
+- **AWS Agent Toolkit:** `aws configure agent-toolkit` (it uses us-east-1) installed 25 AWS skills in `~/.claude/skills`.
+  - It also added an `aws-mcp` server to `~/.claude.json`, set to `AWS_MCP_PROXY_PROFILES=noema`, with the full path to `uvx`.
+  - Its first start timed out while downloading the proxy. The proxy is cached now; it should connect on the next session start.
+- **Gotcha: zsh doesn't word-split `$VAR`.** A `P="--profile noema --region us-east-2"` passed as `$P` arrives as one argument; export `AWS_PROFILE` and `AWS_REGION` instead.
+
+### Verified (by Claude, 2026-11-17)
+- **SSH:** key login works, as `ubuntu`; password login is refused.
+- **Server:** came up with 50 colonies and 400 entities.
+- **Idle:** first tick at 60 s with no clients, 49 ms.
+- **The live site** (`https://noema.dkentbrown.dev`) connected through the tunnel from AWS, and the world drew. The server switched to 5 s ticks with 1 client (57–75 ms each at t2–t4).
+- **The tunnel** registered 4 connections.
+- **CPU** about 4%, memory 470 MB of 1.8 GB.
+
+### Open / to watch
+- **Tick cost as the world grows.** On the Mac, ticks reached 1.5–3.3 s at 18–23k dots. A t4g core is slower than the Mac's, so a full world may not fit the 5 s tick while someone is connected.
+  - It would also run above the 20% CPU baseline (surplus at $0.04/vCPU-h), but only while a client is connected; idle ticks come every 60 s.
+  - Check `journalctl -u noema-server` tick ms after a day or two. If it's tight, cap the world, lengthen the tick, or move up to a t4g.medium (4 GB, about $24/mo plus disk and IP).
+- **No saving:** a reboot, crash restart or update starts a fresh world. Saving is next (phase A).
+- Then: a colony per player and no CPU players (phase A), Google sign-in via Firebase (phase B), and stopping the field driver's autochant into colony 0.
