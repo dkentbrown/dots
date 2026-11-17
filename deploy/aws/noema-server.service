@@ -8,7 +8,13 @@ User=noema
 Environment=HOME=/home/noema
 WorkingDirectory=/opt/noema
 # 5 s ticks while anyone is connected, 60 s while nobody is (server.gd --idle-tick-seconds).
-ExecStart=/usr/local/bin/godot --headless --path /opt/noema res://server.tscn -- --listen 8910 --tick-seconds 5 --idle-tick-seconds 60
+# The world lives in /home/noema/world.save, outside the checkout: saved every minute and on stop,
+# resumed on start (server.gd --save).
+ExecStart=/usr/local/bin/godot --headless --path /opt/noema res://server.tscn -- --listen 8910 --tick-seconds 5 --idle-tick-seconds 60 --save /home/noema/world.save
+# Godot can't catch SIGTERM, so stopping asks for a last save through a file instead: the server
+# saves, removes it and exits, and only then does systemd move on (its SIGTERM finds nothing).
+ExecStop=/bin/sh -c 'touch /home/noema/world.save.stop; while kill -0 $MAINPID 2>/dev/null; do sleep 0.5; done'
+TimeoutStopSec=60
 Restart=always
 RestartSec=5
 

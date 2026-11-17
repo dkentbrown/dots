@@ -2855,3 +2855,49 @@ The live world now runs on an AWS machine, not Dustan's Mac. This replaces the 1
   - Check `journalctl -u noema-server` tick ms after a day or two. If it's tight, cap the world, lengthen the tick, or move up to a t4g.medium (4 GB, about $24/mo plus disk and IP).
 - **No saving:** a reboot, crash restart or update starts a fresh world. Saving is next (phase A).
 - Then: a colony per player and no CPU players (phase A), Google sign-in via Firebase (phase B), and stopping the field driver's autochant into colony 0.
+
+## 2026-11-17 (cont.) — World saving: the world survives restarts
+Dustan: "lets do world saving" (phase A, step 1). Before this, every server start — update, crash restart, reboot — built a brand-new world. (Branch `session/2026-11-17-save`, off `main` at `03635a3`.)
+
+### How it works
+- **`world_sim.gd`:**
+  - `save_world(path)` writes `SAVE_STATE` (41 member variables: every entity record, colony counts, soul, trust, clocks, banners, combat, fog, the grid indexes) as one `store_var`, zstd-compressed. Everything is plain data, so nothing needs converting.
+  - Writing is crash-safe: it goes to `path.tmp`, the old save becomes `path.prev`, then the new one moves in.
+  - `load_world(path)` resumes in place of `setup()` and returns "" or the reason it refused.
+  - **Rebuilt on load, not saved:**
+    - the chant tables and the test field's specs and colours (built from constants, so code changes to them apply on restart);
+    - `cluster_by_defender`, which points *into* `combat_clusters`; a saved copy would no longer be shared;
+    - per-frame scratch.
+  - `spatial_grid` and `speck_cells` ARE saved: occupant order matters to scans.
+  - `setup()`'s shared start (log wipe, `run_start` telemetry, chant tables, field specs) moved into `_start_run`, used by both.
+- **Compatibility:**
+  - A name missing from an older save keeps its fresh default, so new state needs no version bump.
+  - **Bump `SAVE_VERSION` only when a saved name changes meaning or shape.** A save of another version or `GRID_RES` is refused and moved to `PATH.rejected-<time>`, and a fresh world starts.
+- **`server.gd`:**
+  - `--save PATH` resumes from PATH (or `PATH.prev` if PATH can't be read) and saves every `--save-seconds` (default 60 s of real time, checked after each tick).
+  - `--fresh` ignores the save.
+  - `--ticks N` now stops at *world* tick N, so a resumed world counts from its saved tick. The done line reports the ticks run by this process.
+- **Stopping with a last save:**
+  - **Godot dies on SIGTERM and SIGINT without running any script** (tested on both), so a signal can't trigger it.
+  - Instead, creating `PATH.stop` makes the server save, delete it and quit, within a second.
+  - The unit's `ExecStop` creates it and waits for the process to exit (`TimeoutStopSec=60`).
+  - A stale stop file (left after a crash, when systemd still runs `ExecStop`) is deleted at start.
+- **`deploy/aws/`:**
+  - `noema-server.service` adds `--save /home/noema/world.save` (outside the checkout, so updates never touch it) and the `ExecStop`.
+  - `update.sh` now re-installs the unit and runs `daemon-reload` before restarting.
+  - **The live server still runs the old unit:** the first `update.sh` after merging installs it, which costs one last fresh world.
+- **Telemetry:** a resumed run writes `run_start` with `resumed_tick` and `saved_at`, and its ticks continue from `resumed_tick`. Slicing from the last `run_start` still isolates one process's run; a world's whole history can now span several runs.
+
+### Verified (by Claude, in an isolated copy of the project)
+- **Save and resume:** 150 fast ticks saved at t150 (4.6 MB; 0.21–0.26 s to write on the Mac at ~23k entities). A second start resumed at t150 with all 23,288 entities and ticked on to t170 cleanly.
+- **Round trip:** loading the t150 save and re-saving it gave identical values in all 41 fields. `cluster_by_defender` was rebuilt (5 of 5 clusters) and shares the cluster dictionaries rather than copying them.
+- **Stop file:** saved t174 and exited 0.6 s after the file appeared; a stale stop file at start was removed.
+- **Corrupt save:** it was moved aside and the world resumed from `.prev`.
+- **Another version:** both the save and `.prev` were moved aside, and a fresh world started.
+- **Not yet checked on the AWS machine:** the systemd `ExecStop` path and save time on the t4g (expect roughly 2× the Mac's, ~0.5 s per minute).
+
+### Open
+- A crash or hard kill still loses up to the last minute.
+- One save file, no history; a daily copy would make "roll back the world" possible.
+- The bible (§14) puts world state in a database eventually. This file is the step before.
+- Next in phase A: a colony per player and no CPU colonies (needs sign-in, phase B).
