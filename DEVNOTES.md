@@ -2938,7 +2938,10 @@ The AWS t4g runs the same work about 3.5–4× slower than the Mac.
   - Both versions revealed colony 39 at t41 and colony 8 at t73, so the fog change reveals the same colonies on the same ticks.
   - All 22,423 records came out identical apart from the ally/banner slots.
   - Average tick 1,276 → 825 ms over the whole run (−35%).
-- **Expected on AWS:** ~4.9 s per full-world tick, inside the 5 s budget, just. The world keeps growing toward its ~25k cap.
+- **Measured on the AWS t4g, after the merge** (`3550007`): same saved full world, 6 ticks, run in a throwaway copy beside the live server.
+  - `main` before the change: 5,430 ms/tick. After: 3,580 ms/tick (−34%), inside the 5 s budget.
+  - The 7.7 s seen live was a different world (t147, more combat), so it isn't directly comparable. The world keeps growing toward its ~25k cap.
+- **Deployed:** the first update to keep the world. It saved at t21, restarted, and resumed at t21.
 - **Next levers if needed:**
   - a ring-ordered enemy search in observe (it scans the whole radius even after a near hit);
   - the per-dot dictionaries `_tick_dot` builds for selection;
