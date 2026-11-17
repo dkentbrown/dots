@@ -1,0 +1,11 @@
+# Telemetry grows by tens of MB a day. The server reopens the file on every write, so truncating
+# it in place (copytruncate) is safe while it runs. A week of compressed days is kept.
+/opt/noema/telemetry.jsonl {
+	daily
+	rotate 7
+	compress
+	delaycompress
+	copytruncate
+	missingok
+	notifempty
+}
