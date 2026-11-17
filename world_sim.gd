@@ -816,17 +816,7 @@ var _cached_colony_centers = {}
 func setup() -> void:
 	# Build a fresh world: wipe the log, mark the run in telemetry, build the chant tables and
 	# spawn the colonies. The client frames the camera and draws everything afterwards.
-	if LOG_ENABLED:
-		# Wipe log at session start
-		var f = FileAccess.open(LOG_FILE, FileAccess.WRITE)
-		if f:
-			f.store_string("")
-			f.close()
-	# Telemetry is persistent (not wiped); a run_start record segments accumulated runs.
-	_telemetry({ "type": "run_start", "run_id": int(Time.get_unix_time_from_system()), "grid_res": GRID_RES })
-	_build_chant_lexicon()
-	_build_chant_meanings()
-	_build_test_field()
+	_start_run({})
 	if TEST_FIELD:
 		_spawn_test_field()
 	else:
@@ -834,6 +824,105 @@ func setup() -> void:
 		if TEST_MODE:
 			_spawn_test_population()
 		_spawn_enemy_colony()
+
+func _start_run(run_extra: Dictionary) -> void:
+	# What every run does first, fresh or resumed: wipe the log, mark the run in telemetry, and
+	# build the tables that come from constants (chant words, the test field's specs and colours).
+	if LOG_ENABLED:
+		# Wipe log at session start
+		var f = FileAccess.open(LOG_FILE, FileAccess.WRITE)
+		if f:
+			f.store_string("")
+			f.close()
+	# Telemetry is persistent (not wiped); a run_start record segments accumulated runs.
+	var record = { "type": "run_start", "run_id": int(Time.get_unix_time_from_system()), "grid_res": GRID_RES }
+	record.merge(run_extra)
+	_telemetry(record)
+	_build_chant_lexicon()
+	_build_chant_meanings()
+	_build_test_field()
+
+# --- World saving -------------------------------------------------------------------------------
+# The server saves the whole world to one file (server.gd --save): every minute, and when it stops.
+# On start it resumes from that file instead of building a fresh world. The file is the state
+# below, zstd-compressed with store_var: it is all plain data (ids, numbers, vectors, arrays,
+# dictionaries), so nothing needs converting.
+# Saved: the world's truth, plus the indexes whose ORDER matters (spatial_grid and speck_cells
+# list occupants in arrival order, and scans take the first match).
+# Not saved, rebuilt on load:
+#   - the chant tables and the test field's specs and colours (built from constants, so code
+#     changes to them take effect on the next start);
+#   - cluster_by_defender: it points INTO combat_clusters, and a save would copy those
+#     dictionaries instead of sharing them;
+#   - per-frame scratch (view changes, the colony profile cache).
+# A name missing from an older save keeps its fresh default, so new state needs no version bump.
+# Bump SAVE_VERSION only when a saved name changes meaning or shape: a save of another version
+# (or another GRID_RES) is refused, and the server starts a fresh world.
+const SAVE_VERSION = 1
+const SAVE_STATE = [
+	"_tick_num", "_next_dot_id",
+	"dots", "dot_data", "specks", "speck_data", "surface_marks", "mark_data",
+	"spatial_grid", "dot_cell", "speck_cells",
+	"colony_counts", "block_counts", "soul_pool", "_unpaid_builds",
+	"colony_period", "_colony_wait", "colony_ticks", "_due",
+	"trust", "_last_fight",
+	"combat_clusters", "combat_locked", "combat_locked_cells",
+	"rally_banners", "wall_banners", "wall_perch", "attack_alarms",
+	"build_banners", "_next_build_banner_id",
+	"revealed_colonies", "known_colonies", "player_dot",
+	"_cached_colony_center", "_cached_colony_centers",
+	"_local_contacts", "_blend_counts", "_primitive_counts", "_move_mode_counts",
+	"_triad_war_tick", "_triad_war_cast",
+]
+
+func save_world(path: String) -> Error:
+	# Write the world to path. It goes to path.tmp first; the previous save becomes path.prev only
+	# once the new one is complete, so a crash mid-save never leaves the world without a good copy.
+	var state = {}
+	for name in SAVE_STATE:
+		state[name] = get(name)
+	var data = { "version": SAVE_VERSION, "grid_res": GRID_RES, "tick": _tick_num, "saved_at": int(Time.get_unix_time_from_system()), "state": state }
+	var tmp = path + ".tmp"
+	var f = FileAccess.open_compressed(tmp, FileAccess.WRITE, FileAccess.COMPRESSION_ZSTD)
+	if f == null:
+		return FileAccess.get_open_error()
+	f.store_var(data)
+	var err = f.get_error()
+	f.close()
+	if err != OK:
+		return err
+	if FileAccess.file_exists(path):
+		err = DirAccess.rename_absolute(path, path + ".prev")
+		if err != OK:
+			return err
+	return DirAccess.rename_absolute(tmp, path)
+
+func load_world(path: String) -> String:
+	# Resume the world saved at path, in place of setup(). Returns "" on success, or why not. A
+	# refused save changes nothing, so the caller can still setup() a fresh world.
+	if not FileAccess.file_exists(path):
+		return "no save at %s" % path
+	var f = FileAccess.open_compressed(path, FileAccess.READ, FileAccess.COMPRESSION_ZSTD)
+	if f == null:
+		return "could not open %s (error %d)" % [path, FileAccess.get_open_error()]
+	var data = f.get_var()
+	f.close()
+	if not data is Dictionary or not data.get("state") is Dictionary:
+		return "%s is not a world save" % path
+	if data.get("version") != SAVE_VERSION:
+		return "%s is save version %s; this build reads version %d" % [path, data.get("version"), SAVE_VERSION]
+	if data.get("grid_res") != GRID_RES:
+		return "%s has grid %s; this build's grid is %d" % [path, data.get("grid_res"), GRID_RES]
+	_start_run({ "resumed_tick": data.get("tick"), "saved_at": data.get("saved_at") })
+	var state = data["state"]
+	for name in state:
+		if name in SAVE_STATE:
+			set(name, state[name])
+	cluster_by_defender = {}
+	for cluster in combat_clusters:
+		for pair in cluster["pairs"]:
+			cluster_by_defender[pair["defender"]] = cluster
+	return ""
 
 func tick() -> void:
 	# One world tick.
