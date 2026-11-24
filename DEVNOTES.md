@@ -2958,7 +2958,7 @@ The AWS t4g runs the same work about 3.5–4× slower than the Mac.
 | 2 | Empty world: no computer colonies, no autochant | **done, tested** |
 | 3 | Client: watch mode, code box, code in localStorage; shimmer, camera and word cloud follow your colony | **done, tested** |
 | 4 | Fog per player: real colours and colony ids on the wire, a revealed list per client, the client greys the rest | **done, tested** |
-| 5 | Generate 50 codes into `/home/noema/invites.txt`, add `--invites` to `noema-server.service`, wipe, deploy both halves | todo |
+| 5 | Generate 50 codes into `/home/noema/invites.txt`, add `--invites` to `noema-server.service`, wipe, deploy both halves | **done, live 2026-11-24** |
 
 ### What stage 1 added
 - **`server.gd --invites PATH`**
@@ -3080,3 +3080,18 @@ Before this, fog was colony 0's, baked into the colours on the server. Every vie
   - Without codes, fog as before: the others are grey, and colony 0 finds 36, then 14, as it grows.
   - No script errors.
 - **Not checked by eye:** two players meeting and their fog lifting in a browser.
+
+### Stage 5: live (2026-11-24, `main` at `43f93a6`, PR #13)
+- **Codes:**
+  - 50 random codes, `xxxx-xxxx` from `abcdefghjkmnpqrstuvwxyz23456789` (no look-alikes), in `/home/noema/invites.txt` (mode 600, owner noema).
+  - Dustan holds the list privately. **Never put codes in this repo.**
+  - To add codes, append lines to that file: it's re-read on every join, so no restart is needed.
+- **Old world kept, not deleted:** `/home/noema/world.save.pre-players` (t8138, 23k dots), plus `.prev.pre-players`.
+  - To bring it back: stop the service, move it to `world.save`, remove `--invites` from the unit (or keep it; a resumed save keeps its colonies), then start.
+- **Server:** `update.sh` with `BRANCH=main` reinstalled the unit with `--invites`.
+  - The start log read "50 codes, 0 used" and "world ready (fresh): 0 colonies, 0 entities".
+- **Web:** `web/deploy.sh` was run from a clean checkout of `main`, so Dustan's uncommitted `main.tscn` edit (sky `nebula_strength` 0.3; the shader default is 0.65) did **not** ship.
+- **Checked live:**
+  - noema.dkentbrown.dev shows the empty planet and the code box.
+  - A made-up code was refused in the page, and the server logged "join refused: unknown code".
+  - No real code has been used yet: the first use of each one founds its colony.
