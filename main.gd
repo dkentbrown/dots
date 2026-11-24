@@ -77,6 +77,12 @@ var _code = ""                 # the code sent or to send; "" for none
 var _code_box: Control = null
 var _code_note: Label = null
 var _code_input: LineEdit = null
+# On the web the code box is a real page <input> over the canvas instead (_build_web_code_box): a
+# phone opens its keyboard only for a field tapped directly, and a Godot LineEdit is drawn on the
+# canvas, so tapping it never brought the keyboard up.
+const CODE_PLACEHOLDER = "Invite Code"
+var _web_code_submit = null   # the JavaScriptBridge callback; kept here so it stays alive
+var _web_code_shown = false
 # Server mode: a quiet line at the top of the screen while there is no world to draw — the
 # first snapshot can take tens of seconds over the Mac's uplink, and a dead server otherwise
 # looks the same as an empty planet. Hidden once a snapshot arrives; back if the link drops.
@@ -312,9 +318,8 @@ func _net_poll(delta: float) -> void:
 							_code = ""
 							_clear_code()
 							_set_my_colony(-1)
-							_code_note.text = CODE_REFUSED
-							_code_input.clear()
-							_code_input.editable = true
+							_set_code_note(CODE_REFUSED)
+							_set_code_editable(true, true)
 					# Frame your colony once its centre is known (a new colony's arrives with
 					# the first tick after it is founded).
 					if not _framed and _my_colony >= 0 and sim._cached_colony_centers.has(_my_colony):
@@ -349,7 +354,7 @@ func _build_net_status() -> void:
 
 func _update_net_status() -> void:
 	var waiting = _net_down or not sim.has_world
-	_code_box.visible = not waiting and sim.invites and _my_colony < 0
+	_show_code_box(not waiting and sim.invites and _my_colony < 0)
 	_net_status.visible = waiting
 	if not waiting:
 		return
@@ -372,13 +377,13 @@ func _set_my_colony(colony: int) -> void:
 	word_cloud.visible = colony >= 0
 	_framed = false
 	if colony < 0:
-		_code_note.text = CODE_PROMPT
-		_code_input.editable = true
+		_set_code_note(CODE_PROMPT)
+		_set_code_editable(true)
 	_update_hud()
 
 func _send_join() -> void:
-	_code_note.text = CODE_CHECKING
-	_code_input.editable = false
+	_set_code_note(CODE_CHECKING)
+	_set_code_editable(false)
 	_net_send({ "join": _code })
 
 func _on_code_submitted(text: String) -> void:
@@ -410,7 +415,7 @@ func _build_code_box() -> void:
 	_code_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_code_note.text = CODE_PROMPT
 	_code_input = LineEdit.new()
-	_code_input.placeholder_text = "invite code"
+	_code_input.placeholder_text = CODE_PLACEHOLDER
 	_code_input.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_code_input.custom_minimum_size = Vector2(240, 0)
 	_code_input.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -420,6 +425,76 @@ func _build_code_box() -> void:
 	_code_box.add_child(_code_input)
 	_code_box.visible = false
 	$UI.add_child(_code_box)
+	if OS.has_feature("web"):
+		_build_web_code_box()
+
+func _build_web_code_box() -> void:
+	# The same box as page elements, in the loading page's type (web/shell.html's --sans, spaced
+	# capitals). 16px text stops iOS zooming in on focus; Enter (the keyboard's Go) submits.
+	# Keys typed into it are kept from the game (stopPropagation).
+	JavaScriptBridge.eval("""(function(){
+		if (document.getElementById('noema-code')) return;
+		var box = document.createElement('div');
+		box.id = 'noema-code';
+		box.style.cssText = 'position:fixed;left:0;right:0;bottom:calc(64px + env(safe-area-inset-bottom));display:none;flex-direction:column;align-items:center;gap:10px;z-index:2;pointer-events:none;';
+		var note = document.createElement('div');
+		note.id = 'noema-code-note';
+		note.style.cssText = 'font:13px var(--sans, system-ui, sans-serif);letter-spacing:0.16em;color:#d9dcf2;text-align:center;padding:0 16px;';
+		var input = document.createElement('input');
+		input.id = 'noema-code-input';
+		input.type = 'text';
+		input.placeholder = %s;
+		input.maxLength = 64;
+		input.autocomplete = 'off';
+		input.spellcheck = false;
+		input.setAttribute('autocapitalize', 'none');
+		input.setAttribute('autocorrect', 'off');
+		input.setAttribute('enterkeyhint', 'go');
+		input.style.cssText = 'pointer-events:auto;width:240px;max-width:calc(100vw - 32px);box-sizing:border-box;padding:9px 12px;font:16px var(--sans, system-ui, sans-serif);text-align:center;color:#e9e4dc;background:rgba(18,20,28,0.9);border:1px solid rgba(233,228,220,0.28);border-radius:10px;outline:none;';
+		['keydown', 'keyup', 'keypress'].forEach(function(t){
+			input.addEventListener(t, function(e){
+				e.stopPropagation();
+				if (t === 'keydown' && e.key === 'Enter' && window.noemaCodeSubmit) {
+					window.noemaCodeSubmit(input.value);
+					input.blur();
+				}
+			});
+		});
+		box.appendChild(note);
+		box.appendChild(input);
+		document.body.appendChild(box);
+	})()""" % JSON.stringify(CODE_PLACEHOLDER), true)
+	_web_code_submit = JavaScriptBridge.create_callback(_on_web_code_submitted)
+	JavaScriptBridge.get_interface("window").noemaCodeSubmit = _web_code_submit
+	_set_code_note(CODE_PROMPT)
+
+func _on_web_code_submitted(args: Array) -> void:
+	_on_code_submitted(str(args[0]) if args.size() > 0 else "")
+
+# The code box's state, kept in step on whichever box is in use (the page's on the web).
+func _show_code_box(on: bool) -> void:
+	if not OS.has_feature("web"):
+		_code_box.visible = on
+		return
+	if on == _web_code_shown:
+		return
+	_web_code_shown = on
+	JavaScriptBridge.eval("document.getElementById('noema-code').style.display = '%s'" % ("flex" if on else "none"), true)
+
+func _set_code_note(text: String) -> void:
+	_code_note.text = text
+	if OS.has_feature("web"):
+		JavaScriptBridge.eval("document.getElementById('noema-code-note').textContent = %s" % JSON.stringify(text), true)
+
+func _set_code_editable(editable: bool, clear: bool = false) -> void:
+	_code_input.editable = editable
+	if clear:
+		_code_input.clear()
+	if OS.has_feature("web"):
+		var js = "var i = document.getElementById('noema-code-input'); i.disabled = %s;" % ("false" if editable else "true")
+		if clear:
+			js += " i.value = '';"
+		JavaScriptBridge.eval(js, true)
 
 # The browser's localStorage, so a returning player is joined without typing. Guarded: private
 # windows and blocked site data make localStorage throw; the code then lasts this visit only.
