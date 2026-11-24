@@ -62,7 +62,21 @@ const WorldStream = preload("res://world_stream.gd")
 var _net: WebSocketPeer = null
 var _net_assembler = null
 var _net_retry = 0.0
-var _framed = false   # the camera has been framed on the colony (server mode: after the first snapshot)
+var _framed = false   # the camera has been framed on your colony (server mode: once its centre is known)
+# Whose colony this client plays: LOCAL_COLONY locally and against a server without invite
+# codes; with codes, the colony the server answers a join with, and -1 while only watching. Your
+# colony's dots shimmer, the camera frames it, casts fly to it and the word cloud speaks its words.
+var _my_colony = WorldSim.LOCAL_COLONY
+# Invite codes (server mode, server.gd --invites). The code box shows while watching; a code the
+# server accepts is kept in the browser's localStorage and sent again on every (re)connect.
+const CODE_STORAGE_KEY = "noema_invite_code"
+const CODE_PROMPT = "HAVE AN INVITE CODE? ENTER IT TO FOUND YOUR COLONY"
+const CODE_REFUSED = "THAT CODE ISN'T RECOGNISED"
+const CODE_CHECKING = "CHECKING THE CODE"
+var _code = ""                 # the code sent or to send; "" for none
+var _code_box: Control = null
+var _code_note: Label = null
+var _code_input: LineEdit = null
 # Server mode: a quiet line at the top of the screen while there is no world to draw — the
 # first snapshot can take tens of seconds over the Mac's uplink, and a dead server otherwise
 # looks the same as an empty planet. Hidden once a snapshot arrives; back if the link drops.
@@ -121,6 +135,9 @@ func _ready():
 		sim = WorldMirror.new()
 		_net_assembler = WorldStream.Assembler.new()
 		_build_net_status()
+		_build_code_box()
+		_code = _load_code()
+		_my_colony = -1   # until the server's snapshot says whether codes are needed
 		_net_connect()
 	else:
 		sim = WorldSim.new()
@@ -139,6 +156,7 @@ func _ready():
 	word_cloud.pick_word = sim._pick_cloud_word
 	word_cloud.cast_target = _colony_screen_point
 	word_cloud.chant_cast.connect(_process_input)
+	word_cloud.visible = _my_colony >= 0
 	$UI.add_child(word_cloud)
 
 func _set_debug_ui(on: bool) -> void:
@@ -205,7 +223,7 @@ func _update_hud():
 	var totals = {}
 	var count = 0
 	for dot in sim.dots:
-		if sim.dot_data[dot]["colony"] != WorldSim.LOCAL_COLONY:
+		if sim.dot_data[dot]["colony"] != _my_colony:
 			continue
 		if sim.dot_data[dot].get("is_block", false):
 			continue
@@ -221,8 +239,8 @@ func _update_hud():
 	var sorted_keys = totals.keys()
 	sorted_keys.sort_custom(func(a, b): return totals[a] > totals[b])
 	var p1_count = sim.colony_counts.get(WorldSim.ENEMY_COLONY, 0)
-	var p0_blocks = sim.block_counts.get(WorldSim.LOCAL_COLONY, 0)
-	var p0_soul = sim.soul_pool.get(WorldSim.LOCAL_COLONY, 0)
+	var p0_blocks = sim.block_counts.get(_my_colony, 0)
+	var p0_soul = sim.soul_pool.get(_my_colony, 0)
 	var lines = ["p0: %d (blocks: %d, soul: %d)   p1: %d" % [count, p0_blocks, p0_soul, p1_count]]
 	var shown = 0
 	for key in sorted_keys:
@@ -272,13 +290,36 @@ func _net_poll(delta: float) -> void:
 				var msg = _net_assembler.feed(_net.get_packet())
 				if msg != null:
 					sim.apply(msg)
-					if msg.get("kind") == "snapshot":
-						_net_down = false
-						print("[net] world received: t%d, %d entities" % [sim._tick_num, sim.dot_data.size() + sim.speck_data.size() + sim.mark_data.size()])
-						_net_send({ "active": get_window().has_focus() })
-						if not _framed:
-							_framed = true
-							_focus_on_colony()
+					match msg.get("kind"):
+						"snapshot":
+							_net_down = false
+							print("[net] world received: t%d, %d entities" % [sim._tick_num, sim.dot_data.size() + sim.speck_data.size() + sim.mark_data.size()])
+							_net_send({ "active": get_window().has_focus() })
+							if not sim.invites:
+								_set_my_colony(WorldSim.LOCAL_COLONY)
+							elif _code != "":
+								# A new connection starts unjoined: join again (or for the first
+								# time, with a code remembered from an earlier visit).
+								_send_join()
+							else:
+								_set_my_colony(-1)
+						"joined":
+							print("[net] joined colony %d" % msg["colony"])
+							_store_code(_code)
+							_set_my_colony(msg["colony"])
+						"join_refused":
+							print("[net] code refused: %s" % msg.get("reason", ""))
+							_code = ""
+							_clear_code()
+							_set_my_colony(-1)
+							_code_note.text = CODE_REFUSED
+							_code_input.clear()
+							_code_input.editable = true
+					# Frame your colony once its centre is known (a new colony's arrives with
+					# the first tick after it is founded).
+					if not _framed and _my_colony >= 0 and sim._cached_colony_centers.has(_my_colony):
+						_framed = true
+						_focus_on_colony()
 					_update_hud()
 		WebSocketPeer.STATE_CLOSED:
 			_net_down = true
@@ -308,6 +349,7 @@ func _build_net_status() -> void:
 
 func _update_net_status() -> void:
 	var waiting = _net_down or not sim.has_world
+	_code_box.visible = not waiting and sim.invites and _my_colony < 0
 	_net_status.visible = waiting
 	if not waiting:
 		return
@@ -319,12 +361,88 @@ func _net_send(msg: Dictionary) -> void:
 	if _net != null and _net.get_ready_state() == WebSocketPeer.STATE_OPEN:
 		_net.send(var_to_bytes(msg))
 
+# --- Invite codes (server mode) ---
+
+func _set_my_colony(colony: int) -> void:
+	if colony == _my_colony:
+		return
+	_my_colony = colony
+	# Shimmer and fog follow the new colony: redraw everything.
+	sim.set_my_colony(colony)
+	word_cloud.visible = colony >= 0
+	_framed = false
+	if colony < 0:
+		_code_note.text = CODE_PROMPT
+		_code_input.editable = true
+	_update_hud()
+
+func _send_join() -> void:
+	_code_note.text = CODE_CHECKING
+	_code_input.editable = false
+	_net_send({ "join": _code })
+
+func _on_code_submitted(text: String) -> void:
+	var code = text.strip_edges()
+	if code == "":
+		return
+	_code = code
+	_send_join()
+
+func _build_code_box() -> void:
+	# A line of the loading page's spaced capitals over a single text field, low on the screen
+	# where the word cloud sits once you have a colony.
+	var font = FontVariation.new()
+	font.base_font = ThemeDB.fallback_font
+	font.spacing_glyph = 2
+	var settings = LabelSettings.new()
+	settings.font = font
+	settings.font_size = 13
+	settings.font_color = Color(0.85, 0.87, 0.95)
+	_code_box = VBoxContainer.new()
+	_code_box.alignment = BoxContainer.ALIGNMENT_CENTER
+	_code_box.add_theme_constant_override("separation", 10)
+	_code_box.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	_code_box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_code_box.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_code_box.offset_bottom = -64
+	_code_note = Label.new()
+	_code_note.label_settings = settings
+	_code_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_code_note.text = CODE_PROMPT
+	_code_input = LineEdit.new()
+	_code_input.placeholder_text = "invite code"
+	_code_input.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_code_input.custom_minimum_size = Vector2(240, 0)
+	_code_input.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_code_input.max_length = 64
+	_code_input.text_submitted.connect(_on_code_submitted)
+	_code_box.add_child(_code_note)
+	_code_box.add_child(_code_input)
+	_code_box.visible = false
+	$UI.add_child(_code_box)
+
+# The browser's localStorage, so a returning player is joined without typing. Guarded: private
+# windows and blocked site data make localStorage throw; the code then lasts this visit only.
+func _load_code() -> String:
+	if not OS.has_feature("web"):
+		return ""
+	var v = JavaScriptBridge.eval("(function(){try{return localStorage.getItem('%s')||''}catch(e){return ''}})()" % CODE_STORAGE_KEY, true)
+	return str(v) if v != null else ""
+
+func _store_code(code: String) -> void:
+	if OS.has_feature("web"):
+		JavaScriptBridge.eval("(function(){try{localStorage.setItem('%s',%s)}catch(e){}})()" % [CODE_STORAGE_KEY, JSON.stringify(code)], true)
+
+func _clear_code() -> void:
+	if OS.has_feature("web"):
+		JavaScriptBridge.eval("(function(){try{localStorage.removeItem('%s')}catch(e){}})()" % CODE_STORAGE_KEY, true)
+
 func _colony_screen_point():
 	# Where a cast chant flies: your colony's centre on screen, or null when it's on the far side
 	# of the globe (or gone), in which case the words just rise and fade.
-	if sim.colony_counts.get(WorldSim.LOCAL_COLONY, 0) <= 0 or not sim._cached_colony_centers.has(WorldSim.LOCAL_COLONY):
+	if sim.colony_counts.get(_my_colony, 0) <= 0 or not sim._cached_colony_centers.has(_my_colony):
 		return null
-	var p = sim._cached_colony_centers[WorldSim.LOCAL_COLONY] * WorldSim.SPHERE_RADIUS
+	var p = sim._cached_colony_centers[_my_colony] * WorldSim.SPHERE_RADIUS
 	if p.dot(camera.global_position) <= WorldSim.SPHERE_RADIUS * WorldSim.SPHERE_RADIUS:
 		return null
 	return camera.unproject_position(p)
@@ -471,16 +589,24 @@ func _entity_transform(id: int) -> Transform3D:
 func _entity_colors(id: int) -> Array:
 	# [albedo, emission] in sRGB. The emission's alpha is the "yours" flag entity.gdshader reads:
 	# 1 for your own colony's dots, blocks and walls (they shimmer), 0 for everything else.
+	# Dots, blocks and marks of a colony your player hasn't found yet are fog grey (sim.is_fogged;
+	# from a server the colours arrive real, and only the client knows whose view it is).
 	var c: Array
 	var own = 0.0
 	if sim.dot_data.has(id):
 		c = sim._dot_colors(id)
-		if sim.dot_data[id].get("colony") == WorldSim.LOCAL_COLONY:
+		var colony = sim.dot_data[id].get("colony")
+		if _my_colony >= 0 and colony == _my_colony:
 			own = 1.0
+		if sim.is_fogged(colony):
+			c = [WorldSim.FOG_COLOR, WorldSim.FOG_EMISSION]
 	elif sim.speck_data.has(id):
 		c = [SPECK_COLOR, SPECK_COLOR]
 	else:
-		c = [sim.mark_data[id]["color"], sim.mark_data[id]["color"]]
+		var m = sim.mark_data[id]
+		c = [m["color"], m["color"]]
+		if sim.is_fogged(m["colony"]):
+			c = [WorldSim.FOG_COLOR, WorldSim.FOG_COLOR]
 	var emission: Color = c[1]
 	emission.a = own
 	return [c[0], emission]
@@ -530,7 +656,7 @@ func _wall_basis(dir: Vector3, threat_dir: Vector3) -> Basis:
 
 
 func _focus_on_colony():
-	var center = sim._compute_colony_center(WorldSim.LOCAL_COLONY)
+	var center = sim._compute_colony_center(_my_colony)
 	if center.length_squared() < WorldSim.PARALLEL_EPSILON:
 		return
 	var dir = center.normalized()
@@ -599,7 +725,9 @@ func _input(event):
 		if event.pressed:
 			touch_positions[event.index] = event.position
 			# A finger that lands on the word cloud is choosing words, not rotating the globe.
-			if touch_positions.size() == 1 and not (word_cloud and word_cloud.get_global_rect().has_point(event.position)):
+			var on_ui = (word_cloud and word_cloud.visible and word_cloud.get_global_rect().has_point(event.position)) \
+				or (_code_box and _code_box.visible and _code_box.get_global_rect().has_point(event.position))
+			if touch_positions.size() == 1 and not on_ui:
 				single_touch_active = true
 				single_touch_index = event.index
 		else:

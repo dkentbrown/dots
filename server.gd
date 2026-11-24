@@ -26,10 +26,23 @@ extends Node
 # Each tick prints one line: tick, live dots, blocks, specks, clients, and that tick's cost in ms.
 # Chants can be injected while it runs through res://chant.json, as with the client.
 #
+#     --invites PATH     invite codes, one per line (blank lines and # comments ignored). The
+#                        file is re-read on every join, so codes can be added while it runs. Keep
+#                        it out of the repo: a code is a player's login. A fresh world starts
+#                        empty (WorldSim.setup_empty): no computer colonies, no autochant; a
+#                        resumed save keeps whatever it holds. Without --invites the server runs
+#                        as before: the test field, and every client is LOCAL_COLONY.
+#
 # Networking (world_stream.gd): a client that connects gets a full snapshot, then each tick's
-# changes. Clients send {"chant": text} (applied to LOCAL_COLONY — one player for now) and
-# {"active": bool} (window focus); LOCAL_COLONY is on the active clock while any connected
-# client is active, and passive when none is.
+# changes, whether or not it has joined: without a code it only watches. The snapshot's
+# "invites" says whether this server takes codes at all. Clients send:
+#   {"join": code}   with --invites: the code's colony, founded on its first use (see
+#                    WorldSim.spawn_player_colony) and refounded if it has died out. The server
+#                    answers {"kind": "joined", "colony": id} or {"kind": "join_refused", "reason"}.
+#   {"chant": text}  applied to the client's colony; ignored from a client that hasn't joined.
+#   {"active": bool} window focus. A colony is on the active clock while any client joined to it
+#                    is active, and passive otherwise (nobody connected, or all unfocused).
+# Without --invites every client counts as joined to LOCAL_COLONY, the one-player setup.
 
 const WorldSim = preload("res://world_sim.gd")
 const WorldStream = preload("res://world_stream.gd")
@@ -51,8 +64,9 @@ var _ticks_run = 0   # ticks run since this process started (a resumed world sta
 var _timer = 0.0
 var _total_ms = 0.0
 var _tcp: TCPServer = null
-var _peers = []   # { "ws": WebSocketPeer, "open": bool, "active": bool }
+var _peers = []   # { "ws": WebSocketPeer, "open": bool, "active": bool, "colony": int (-1: watching) }
 var _msg_id = 0
+var _invites_path = ""   # empty: no invite codes, everyone is LOCAL_COLONY
 
 func _ready() -> void:
 	var port = 0
@@ -75,6 +89,8 @@ func _ready() -> void:
 			_save_seconds = float(args[i + 1])
 		elif args[i] == "--fresh":
 			fresh = true
+		elif args[i] == "--invites" and i + 1 < args.size():
+			_invites_path = args[i + 1]
 	sim = WorldSim.new()
 	var resumed = false
 	if _save_path != "" and FileAccess.file_exists(_save_path + ".stop"):
@@ -83,7 +99,11 @@ func _ready() -> void:
 		resumed = _resume()
 	if not resumed:
 		sim = WorldSim.new()   # a refused save leaves no trace, but start from a clean object anyway
-		sim.setup()
+		# With invite codes the world starts empty: every colony is a player's.
+		if _invites_path != "":
+			sim.setup_empty()
+		else:
+			sim.setup()
 	_last_save_ms = Time.get_ticks_msec()
 	# Mark the run as headless in telemetry, right after its run_start record.
 	sim._telemetry({ "type": "headless", "max_ticks": _max_ticks, "fast": _fast, "listen": port, "tick_seconds": _tick_seconds, "idle_tick_seconds": _idle_tick_seconds })
@@ -95,7 +115,9 @@ func _ready() -> void:
 			_tcp = null
 		else:
 			# Nobody is watching until a client connects.
-			sim.set_colony_active(WorldSim.LOCAL_COLONY, false)
+			_update_presence()
+	if _invites_path != "":
+		print("[server] invite codes from %s: %d codes, %d used" % [_invites_path, _read_invites().size(), sim.players.size()])
 	var idle_note = (" (%.0f s with nobody connected)" % _idle_tick_seconds) if _idle_tick_seconds > 0 else ""
 	var origin = ("resumed at t%d" % sim._tick_num) if resumed else "fresh"
 	var save_note = (", saving to %s every %.0f s" % [_save_path, _save_seconds]) if _save_path != "" else ""
@@ -189,7 +211,8 @@ func _poll_clients() -> void:
 		ws.outbound_buffer_size = OUTBOUND_BUFFER_BYTES
 		ws.inbound_buffer_size = INBOUND_BUFFER_BYTES
 		ws.accept_stream(_tcp.take_connection())
-		_peers.append({ "ws": ws, "open": false, "active": true })
+		# Without invite codes every client is the one player, LOCAL_COLONY.
+		_peers.append({ "ws": ws, "open": false, "active": true, "colony": -1 if _invites_path != "" else WorldSim.LOCAL_COLONY })
 	var presence_changed = false
 	for p in _peers.duplicate():
 		var ws: WebSocketPeer = p["ws"]
@@ -199,7 +222,9 @@ func _poll_clients() -> void:
 			if not p["open"]:
 				p["open"] = true
 				presence_changed = true
-				_send(ws, WorldStream.snapshot(sim))
+				var snap = WorldStream.snapshot(sim)
+				snap["invites"] = _invites_path != ""   # the client shows its code box only if so
+				_send(ws, snap)
 				print("[server] client connected (%d open)" % _open_count())
 			while ws.get_available_packet_count() > 0:
 				presence_changed = _handle(p, ws.get_packet()) or presence_changed
@@ -208,23 +233,70 @@ func _poll_clients() -> void:
 			presence_changed = true
 			print("[server] client left (%d open)" % _open_count())
 	if presence_changed:
-		var any_active = false
-		for p in _peers:
-			if p["open"] and p["active"]:
-				any_active = true
-		sim.set_colony_active(WorldSim.LOCAL_COLONY, any_active)
+		_update_presence()
+
+func _update_presence() -> void:
+	# A player colony is active while any client joined to it is open and focused; every other
+	# player colony is passive. set_colony_active ignores no-change calls.
+	var active = {}
+	for p in _peers:
+		if p["open"] and p["active"] and p["colony"] >= 0:
+			active[p["colony"]] = true
+	var colonies = sim.players.values() if _invites_path != "" else [WorldSim.LOCAL_COLONY]
+	for c in colonies:
+		sim.set_colony_active(c, active.has(c))
 
 func _handle(p: Dictionary, packet: PackedByteArray) -> bool:
 	# Apply one client message; true if it changed the client's presence.
 	var msg = bytes_to_var(packet)
 	if not msg is Dictionary:
 		return false
-	if msg.has("chant") and msg["chant"] is String:
-		sim._process_chant_locally(msg["chant"].substr(0, 200))
+	if msg.has("join") and msg["join"] is String and _invites_path != "":
+		_join(p, msg["join"])
+		return true
+	if msg.has("chant") and msg["chant"] is String and p["colony"] >= 0:
+		sim._process_chant_locally(msg["chant"].substr(0, 200), p["colony"])
 	if msg.has("active") and msg["active"] is bool:
 		p["active"] = msg["active"]
 		return true
 	return false
+
+# --- Invite codes ---
+
+func _normalize_code(code: String) -> String:
+	# Codes are matched case-blind, ignoring spaces at either end.
+	return code.strip_edges().to_lower()
+
+func _read_invites() -> Dictionary:
+	# The codes in the invites file (normalized -> true). Read fresh each time, so codes added to
+	# the file work without a restart. A missing file means no codes.
+	var codes = {}
+	var f = FileAccess.open(_invites_path, FileAccess.READ)
+	if f == null:
+		return codes
+	for line in f.get_as_text().split("\n"):
+		var code = _normalize_code(line)
+		if code != "" and not code.begins_with("#"):
+			codes[code] = true
+	f.close()
+	return codes
+
+func _join(p: Dictionary, raw_code: String) -> void:
+	# Bind this client to the code's colony, founding it on the code's first use, or again when
+	# the old one has died out (no living dots).
+	var code = _normalize_code(raw_code.substr(0, 64))
+	if not _read_invites().has(code):
+		_send(p["ws"], { "kind": "join_refused", "reason": "unknown code" })
+		print("[server] join refused: unknown code")
+		return
+	var colony = sim.players.get(code, -1)
+	if colony < 0 or sim.colony_counts.get(colony, 0) <= 0:
+		colony = sim.spawn_player_colony()
+		sim.players[code] = colony
+		sim._telemetry({ "type": "player_joined", "tick": sim._tick_num, "colony": colony, "new": true })
+	p["colony"] = colony
+	_send(p["ws"], { "kind": "joined", "colony": colony })
+	print("[server] client joined colony %d (%d players)" % [colony, sim.players.size()])
 
 func _broadcast(msg: Dictionary) -> void:
 	_msg_id += 1

@@ -730,11 +730,13 @@ var _chant_lexicon = {}
 # Word-cloud meanings, grouped from _chant_lexicon: [{ "words": [...], "fragment": {...}, "next": int }].
 # "next" rotates through the synonyms so the same word doesn't keep coming back.
 var _chant_meanings = []
-# colony -> last tick one of its dots was in blending contact with a LOCAL_COLONY dot.
-var _local_contacts = {}
+# colony -> { other colony -> last tick one of their dots were in blending contact }. Feeds each
+# player's word cloud its CONTACT words (_current_contacts).
+var _contacts = {}
 # colony -> mean CCE of its living dots, valid for _profile_cache_tick only (_colony_profile).
 var _profile_cache = {}
 var _profile_cache_tick = -1
+var _all_profiles_tick = -1   # the tick _all_colony_profiles last filled the whole cache
 # Live-dot record (see _create_dot), keyed by entity id (its mesh is views[id]):
 # dot_data[id] = {
 #   "age": int,                 # ticks lived, dies at DOT_LIFETIME
@@ -755,7 +757,12 @@ var player_dot = null
 const LOCAL_COLONY = 0
 const ENEMY_COLONY = 1
 
+# Fog of war: the colonies a viewer has found (seen beside its own). revealed_colonies is
+# LOCAL_COLONY's: the local game's, and the one _dot_colors fogs by. Every other player colony
+# (invite codes) keeps its own set in player_reveals; the server sends each player its set and
+# the client does the greying (world_stream.gd, main.gd _entity_colors).
 var revealed_colonies = {LOCAL_COLONY: true}
+var player_reveals = {}   # player colony (not LOCAL_COLONY) -> { colony -> true }, itself included
 var known_colonies = {LOCAL_COLONY: true}  # tracks all spawned colony IDs for fog early-exit
 const FOG_COLOR = Color(0.25, 0.25, 0.25)
 const FOG_EMISSION = Color(0.1, 0.1, 0.1)
@@ -825,6 +832,13 @@ func setup() -> void:
 			_spawn_test_population()
 		_spawn_enemy_colony()
 
+func setup_empty() -> void:
+	# A fresh world with no colonies at all, for the invite-code server: every colony is a
+	# player's, founded by spawn_player_colony when its code is first used. known_colonies drops
+	# its LOCAL_COLONY placeholder so the first player gets colony 0.
+	_start_run({ "empty_world": true })
+	known_colonies = {}
+
 func _start_run(run_extra: Dictionary) -> void:
 	# What every run does first, fresh or resumed: wipe the log, mark the run in telemetry, and
 	# build the tables that come from constants (chant words, the test field's specs and colours).
@@ -869,10 +883,11 @@ const SAVE_STATE = [
 	"combat_clusters", "combat_locked", "combat_locked_cells",
 	"rally_banners", "wall_banners", "wall_perch", "attack_alarms",
 	"build_banners", "_next_build_banner_id",
-	"revealed_colonies", "known_colonies", "player_dot",
+	"revealed_colonies", "player_reveals", "known_colonies", "player_dot",
 	"_cached_colony_center", "_cached_colony_centers",
-	"_local_contacts", "_blend_counts", "_primitive_counts", "_move_mode_counts",
+	"_contacts", "_blend_counts", "_primitive_counts", "_move_mode_counts",
 	"_triad_war_tick", "_triad_war_cast",
+	"players",
 ]
 
 func save_world(path: String) -> Error:
@@ -1179,11 +1194,13 @@ func _tick_blending() -> void:
 						var cb = dot_data[b]["colony"]
 						if ca == cb:
 							continue
-						# Remembered for the word cloud's CONTACT words.
-						if ca == LOCAL_COLONY:
-							_local_contacts[cb] = _tick_num
-						elif cb == LOCAL_COLONY:
-							_local_contacts[ca] = _tick_num
+						# Remembered for the word cloud's CONTACT words, on both sides.
+						if not _contacts.has(ca):
+							_contacts[ca] = {}
+						_contacts[ca][cb] = _tick_num
+						if not _contacts.has(cb):
+							_contacts[cb] = {}
+						_contacts[cb][ca] = _tick_num
 						_blend_pair(dot_data[a]["cce"], dot_data[b]["cce"], BLEND_RATE)
 						contact_pairs[Vector2i(min(ca, cb), max(ca, cb))] = true
 						touched[a] = true
@@ -1309,7 +1326,13 @@ func _tick_autochant() -> void:
 			if _field_specs[i].get("war_response", false) and colony_counts.get(i, 0) > 0:
 				for _k in range(TRIAD_WAR_CASTS):
 					_apply_recipe(TRIAD_WAR_CHANT, i)
+	# A player's colony chants only what its player chants, even when its id is a field slot.
+	var player_colonies = {}
+	for c in players.values():
+		player_colonies[c] = true
 	for i in range(_field_specs.size()):
+		if player_colonies.has(i):
+			continue
 		if not _due.has(i) or colony_ticks[i] % AUTOCHANT_INTERVAL != 0:
 			continue
 		if colony_counts.get(i, 0) <= 0:
@@ -1322,12 +1345,13 @@ func _tick_autochant() -> void:
 			lean = GENERALIST_ATTACK_LEAN if spec["combat_role"] == "attack" else GENERALIST_DEFEND_LEAN
 		_apply_recipe(lean, i)
 
-func _process_chant_locally(text: String):
+func _process_chant_locally(text: String, colony: int = LOCAL_COLONY):
 	var parsed = _interpret_chant(text)
 	print("Chant '", text, "' -> matched ", parsed["matched"], "  unmatched ", parsed["unmatched"])
 	_telemetry({
 		"type": "chant_parsed",
 		"tick": _tick_num,
+		"colony": colony,
 		"text": text,
 		"matched": parsed["matched"],
 		"unmatched": parsed["unmatched"]
@@ -1335,7 +1359,7 @@ func _process_chant_locally(text: String):
 	if parsed["matched"].is_empty():
 		print("No local recipe for: ", text)
 		return
-	_apply_recipe(parsed["recipe"])
+	_apply_recipe(parsed["recipe"], colony)
 
 func _build_chant_lexicon() -> void:
 	for group in CHANT_LEXICON:
@@ -1450,6 +1474,42 @@ func _colony_profile(colony: int) -> Dictionary:
 	_profile_cache[colony] = sum
 	return sum
 
+func _all_colony_profiles() -> Dictionary:
+	# _colony_profile for every colony with living dots, in one pass over the dots instead of one
+	# pass per colony (the server streams every player's profile each tick). Same sums, same
+	# cache; a colony with no living dots is left out (its _colony_profile is {}).
+	if _profile_cache_tick != _tick_num:
+		_profile_cache.clear()
+		_profile_cache_tick = _tick_num
+	if _all_profiles_tick == _tick_num:
+		return _profile_cache
+	var sums = {}
+	var counts = {}
+	for dot in dots:
+		var d = dot_data[dot]
+		if d.get("is_block", false):
+			continue
+		var colony = d["colony"]
+		if not sums.has(colony):
+			sums[colony] = {}
+			counts[colony] = 0
+		var sum = sums[colony]
+		for layer in CCE_BLEND_LAYERS:
+			if not d["cce"].has(layer):
+				continue
+			if not sum.has(layer):
+				sum[layer] = {}
+			for k in d["cce"][layer]:
+				sum[layer][k] = sum[layer].get(k, 0.0) + d["cce"][layer][k]
+		counts[colony] += 1
+	for colony in sums:
+		for layer in sums[colony]:
+			for k in sums[colony][layer]:
+				sums[colony][layer][k] /= counts[colony]
+		_profile_cache[colony] = sums[colony]
+	_all_profiles_tick = _tick_num
+	return _profile_cache
+
 func _meaning_affinity(frag: Dictionary, profile: Dictionary) -> float:
 	# How strongly a culture already leans the way this meaning pushes: its positive verb/mode
 	# weights against the culture's, plus its dial shifts against the culture's offset from
@@ -1465,10 +1525,11 @@ func _meaning_affinity(frag: Dictionary, profile: Dictionary) -> float:
 			a += max(0.0, frag["dials"][k] * (profile["dials"].get(k, base) - base))
 	return a
 
-func _current_contacts() -> Array:
+func _current_contacts(colony: int = LOCAL_COLONY) -> Array:
 	var out = []
-	for c in _local_contacts:
-		if _tick_num - _local_contacts[c] <= CLOUD_CONTACT_MEMORY_TICKS and colony_counts.get(c, 0) > 0:
+	var seen = _contacts.get(colony, {})
+	for c in seen:
+		if _tick_num - seen[c] <= CLOUD_CONTACT_MEMORY_TICKS and colony_counts.get(c, 0) > 0:
 			out.append(c)
 	return out
 
@@ -1777,7 +1838,8 @@ func _execute_primitive(dot: int, primitive: String, dials: Dictionary):
 		"mark_surface":
 			# Leave a persistent mark at the dot's position, coloured by the dot's own CCE
 			# tint (so a red-tinted culture paints red). Permanence/size scale with intensity.
-			var mark_color = _dot_colors(dot)[0]
+			# Its real colour, never fog: the view greys a mark by its colony, for each viewer.
+			var mark_color = _dot_colors(dot, false)[0]
 			_create_surface_mark(_dir_of(dot), mark_color, intensity, dot_data[dot]["colony"])
 		"gather":
 			# Directed soul-seeking. March toward the nearest speck this dot has observed;
@@ -2669,12 +2731,13 @@ func _update_dot_color(dot: int):
 	# Its look may have changed (CCE, fog, palette): flag it; _sync_views recolours the mesh.
 	_view_touch(dot, VIEW_COLOR)
 
-func _dot_colors(dot: int) -> Array:
-	# [albedo, emission] for a dot or block from its data alone — fog, the field palette, the wall
-	# colour or the CCE tint. Used by the view (_view_color) and by mark_surface, which paints in
-	# its maker's colour.
+func _dot_colors(dot: int, fog: bool = true) -> Array:
+	# [albedo, emission] for a dot or block from its data alone — fog (LOCAL_COLONY's, unless
+	# `fog` is false), the field palette, the wall colour or the CCE tint. Used by the view, by
+	# the server's stream (unfogged: each client fogs for its own player) and by mark_surface,
+	# which paints in its maker's real colour.
 	var colony = dot_data[dot]["colony"]
-	if not revealed_colonies.get(colony, false):
+	if fog and not revealed_colonies.get(colony, false):
 		return [FOG_COLOR, FOG_EMISSION]
 	# Test-run overlay: colour by colony identity, not CCE, so specs are told apart at a glance.
 	# Returns before the CCE/wall logic below, which is left fully intact for the flag-off path.
@@ -2715,6 +2778,27 @@ func _update_all_dot_colors():
 	for dot in dots:
 		_update_dot_color(dot)
 
+func _update_colony_colors(colony: int) -> void:
+	# A colony's fog lifted: recolour its dots, blocks and surface marks (the rest are unchanged).
+	for dot in dots:
+		if dot_data[dot]["colony"] == colony:
+			_update_dot_color(dot)
+	for mark in mark_data:
+		if mark_data[mark]["colony"] == colony:
+			_view_touch(mark, VIEW_COLOR)
+
+func is_fogged(colony: int) -> bool:
+	# Whether the local view greys this colony out (main.gd; WorldMirror has its own).
+	return not revealed_colonies.get(colony, false)
+
+func _revealed_for(viewer: int) -> Dictionary:
+	# The set of colonies `viewer` has found; created (holding itself) on first use.
+	if viewer == LOCAL_COLONY:
+		return revealed_colonies
+	if not player_reveals.has(viewer):
+		player_reveals[viewer] = { viewer: true }
+	return player_reveals[viewer]
+
 func _compute_all_colony_centers() -> void:
 	# One pass over `dots` for every colony at once. Block inclusion deliberately matches
 	# _compute_colony_center (blocks live in `dots` and are NOT filtered out), so colony 0's
@@ -2745,16 +2829,27 @@ func _compute_colony_center(colony: int) -> Vector3:
 # --- Fog of war ---
 
 func _check_fog_of_war():
-	# Cheap early exit: known set size matches revealed set size
-	if revealed_colonies.size() >= known_colonies.size():
+	# Each viewer — LOCAL_COLONY, and every player colony (invite codes) — finds the colonies
+	# beside its own, one per tick, each in its own set (_revealed_for).
+	# Cheap early exit per viewer: it has found every colony there is.
+	var viewers = {}
+	var candidates = [LOCAL_COLONY]
+	candidates.append_array(players.values())
+	for v in candidates:
+		var rev = _revealed_for(v)
+		if rev.size() < known_colonies.size():
+			viewers[v] = rev
+	if viewers.is_empty():
 		return
-	# Look outward from LOCAL_COLONY's few hundred entities, not inward from every other one
+	# Look outward from the viewers' own entities, not inward from every other one
 	# (2026-11-17: the inward scan was ~8% of a full world's tick): collect the unrevealed
-	# entities in the 3x3 window around each of ours.
-	var near = {}
+	# entities in the 3x3 window around each of theirs.
+	var near = {}   # viewer -> { entity -> true }
 	for dot in dots:
-		if dot_data[dot]["colony"] != LOCAL_COLONY:
+		var v = dot_data[dot]["colony"]
+		if not viewers.has(v):
 			continue
+		var rev = viewers[v]
 		var key = _cell_key(_dir_of(dot))
 		for du in [-1, 0, 1]:
 			for dv in [-1, 0, 1]:
@@ -2767,19 +2862,23 @@ func _check_fog_of_war():
 					for occupant in spatial_grid[neighbor]:
 						if dot_data.has(occupant):
 							var c = dot_data[occupant]["colony"]
-							if c != LOCAL_COLONY and not revealed_colonies.get(c, false):
-								near[occupant] = true
-	if near.is_empty():
-		return
-	# One reveal per tick, the first in `dots` order, as before.
+							if c != v and not rev.get(c, false):
+								if not near.has(v):
+									near[v] = {}
+								near[v][occupant] = true
+	# One reveal per viewer per tick, the first in `dots` order, as before.
 	for dot in dots:
-		if near.has(dot):
-			var colony = dot_data[dot]["colony"]
-			revealed_colonies[colony] = true
-			print("Colony %d revealed!" % colony)
-			_telemetry({ "type": "reveal", "tick": _tick_num, "colony": colony })
-			_update_all_dot_colors()
+		if near.is_empty():
 			return
+		for v in near.keys():
+			if near[v].has(dot):
+				var colony = dot_data[dot]["colony"]
+				viewers[v][colony] = true
+				near.erase(v)
+				print("Colony %d revealed to colony %d" % [colony, v])
+				_telemetry({ "type": "reveal", "tick": _tick_num, "colony": colony, "viewer": v })
+				if v == LOCAL_COLONY:
+					_update_colony_colors(colony)   # the only fog the sim's own colours carry
 
 # --- Spatial grid (incrementally maintained) ---
 
@@ -3101,6 +3200,59 @@ func _spawn_test_field():
 		print("[field] c%d '%s' (%s) founded with %d dots" % [i, spec["name"], _field_colors[i]["name"], seeded])
 	if TEST_FIELD_REVEAL_ALL:
 		_update_all_dot_colors()
+
+# --- Player colonies (invite codes, 2026-11-23) ---
+# A player's first join (server.gd, with an invite code) founds their colony: TEST_FIELD_SEED_POP
+# dots of the balanced starting culture (TEST_FIELD_BASE, which is also where cultures drift back
+# to), at the spot farthest from every living colony out of PLAYER_SPAWN_TRIES random ones.
+const PLAYER_SPAWN_TRIES = 64
+# invite code -> the colony it founded. Saved with the world, so a code finds its colony again
+# after a restart; a fresh world starts with none, and every code founds a new colony.
+var players = {}
+
+func spawn_player_colony() -> int:
+	# Found a new colony for a player and return its id: the lowest id no colony has used.
+	var colony = 0
+	while known_colonies.has(colony) or colony_counts.get(colony, 0) > 0 or block_counts.get(colony, 0) > 0:
+		colony += 1
+	var others = []
+	for c in _cached_colony_centers:
+		if colony_counts.get(c, 0) > 0:
+			others.append(_cached_colony_centers[c])
+	var dir = Vector3(randfn(0.0, 1.0), randfn(0.0, 1.0), randfn(0.0, 1.0)).normalized()
+	if not others.is_empty():
+		var best_gap = -1.0
+		for _try in range(PLAYER_SPAWN_TRIES):
+			var cand = Vector3(randfn(0.0, 1.0), randfn(0.0, 1.0), randfn(0.0, 1.0)).normalized()
+			var gap = INF
+			for o in others:
+				gap = min(gap, cand.angle_to(o))
+			if gap > best_gap:
+				best_gap = gap
+				dir = cand
+	var preset = _make_field_cce({ "start": {} })
+	known_colonies[colony] = true
+	_create_dot(dir, null, colony, preset)
+	# Seed neighbours around the founder, as _spawn_test_field does.
+	var up = Vector3.UP if abs(dir.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
+	var t = dir.cross(up).normalized()
+	var b = dir.cross(t).normalized()
+	var seeded = 1
+	var attempts = 0
+	while seeded < TEST_FIELD_SEED_POP and attempts < 200:
+		attempts += 1
+		var a = randf() * TAU
+		var rad = lerp(SPAWN_NUDGE, SPAWN_NUDGE * 4.0, randf())
+		var sdir = (dir + (t * cos(a) + b * sin(a)) * rad).normalized()
+		if _is_cell_occupied(sdir):
+			continue
+		_create_dot(sdir, null, colony, preset)
+		seeded += 1
+	# Its centre is known at once, so the next spawn (even in the same tick) keeps its distance.
+	_cached_colony_centers[colony] = dir
+	_telemetry({ "type": "player_colony", "tick": _tick_num, "colony": colony, "pop": seeded })
+	print("[players] colony %d founded with %d dots" % [colony, seeded])
+	return colony
 
 func _spawn_enemy_colony():
 	var player_dir = _dir_of(player_dot)
