@@ -10,7 +10,11 @@ extends RefCounted
 # arrays rather than one Dictionary each, then the message is var_to_bytes'd, zstd-compressed and
 # cut into CHUNK_BYTES pieces, each with a 12-byte header (message id u32, part u16, parts u16,
 # uncompressed size u32), so no single WebSocket message is large enough to trip a proxy limit.
-# Client → server messages are small Dictionaries sent whole: {"chant": text}, {"active": bool}.
+# Client → server messages are small Dictionaries sent whole: {"join": code}, {"chant": text},
+# {"active": bool} (see server.gd). One stream goes to every client, so it carries what any
+# player needs: each dot's and mark's colony id and REAL colours, every player colony's fog
+# (the colonies it has found) and word-cloud profiles. The client picks out its own
+# (world_mirror.gd my_colony) and greys out what its player hasn't found.
 
 const WorldSim = preload("res://world_sim.gd")
 
@@ -21,7 +25,6 @@ const HEADER_BYTES = 12
 const FLAG_BLOCK = 1
 const FLAG_WALL = 2      # a wall's threat_dir follows in the dot "extra" array
 const FLAG_FACING = 4    # the dot's facing follows in "extra" (after threat_dir for a wall)
-const FLAG_OWN = 8       # the player's own colony (LOCAL_COLONY); the client makes these shimmer
 
 # --- Server side ---
 
@@ -33,12 +36,14 @@ static func entity_batch(sim, ids) -> Dictionary:
 	var d_stack = PackedInt32Array()
 	var d_extra = PackedVector3Array()
 	var d_cols = PackedByteArray()
+	var d_colony = PackedInt32Array()
 	var s_ids = PackedInt64Array()
 	var s_dirs = PackedVector3Array()
 	var m_ids = PackedInt64Array()
 	var m_dirs = PackedVector3Array()
 	var m_sizes = PackedFloat32Array()
 	var m_cols = PackedByteArray()
+	var m_colony = PackedInt32Array()
 	for id in ids:
 		if sim.dot_data.has(id):
 			var d = sim.dot_data[id]
@@ -51,13 +56,12 @@ static func entity_batch(sim, ids) -> Dictionary:
 			if d.get("facing") != null:
 				flags |= FLAG_FACING
 				d_extra.append(d["facing"])
-			if d.get("colony") == WorldSim.LOCAL_COLONY:
-				flags |= FLAG_OWN
 			d_ids.append(id)
 			d_dirs.append(d["dir"])
 			d_flags.append(flags)
 			d_stack.append(d.get("stack_index", 0))
-			var c = sim._dot_colors(id)
+			d_colony.append(d["colony"])
+			var c = sim._dot_colors(id, false)   # unfogged: the client fogs for its player
 			_append_color(d_cols, c[0])
 			_append_color(d_cols, c[1])
 		elif sim.speck_data.has(id):
@@ -69,17 +73,31 @@ static func entity_batch(sim, ids) -> Dictionary:
 			m_dirs.append(m["dir"])
 			m_sizes.append(m["size"])
 			_append_color(m_cols, m["color"])
+			m_colony.append(m["colony"])
 	return {
-		"dots": [d_ids, d_dirs, d_flags, d_stack, d_extra, d_cols],
+		"dots": [d_ids, d_dirs, d_flags, d_stack, d_extra, d_cols, d_colony],
 		"specks": [s_ids, s_dirs],
-		"marks": [m_ids, m_dirs, m_sizes, m_cols],
+		"marks": [m_ids, m_dirs, m_sizes, m_cols, m_colony],
 	}
 
 static func world_state(sim) -> Dictionary:
-	# The counters the client reads besides entities. Profiles feed the word cloud's picks.
-	var contacts = []
-	for c in sim._current_contacts():
-		contacts.append(sim._colony_profile(c))
+	# The counters the client reads besides entities. Profiles feed the word cloud's picks: for
+	# each player colony (LOCAL_COLONY without invite codes) its own profile, the colonies it has
+	# met lately, and theirs.
+	var players = { WorldSim.LOCAL_COLONY: true }
+	for c in sim.players.values():
+		players[c] = true
+	var all_profiles = sim._all_colony_profiles()
+	var profiles = {}
+	var contacts = {}
+	var reveals = {}
+	for c in players:
+		reveals[c] = PackedInt32Array(sim._revealed_for(c).keys())
+		var met = sim._current_contacts(c)
+		contacts[c] = met
+		for m in [c] + met:
+			if all_profiles.has(m):
+				profiles[m] = all_profiles[m]
 	return {
 		"tick": sim._tick_num,
 		"counts": sim.colony_counts,
@@ -88,8 +106,9 @@ static func world_state(sim) -> Dictionary:
 		"centers": sim._cached_colony_centers,
 		"period": sim.colony_period,
 		"perch": PackedInt64Array(sim.wall_perch.keys()),
-		"self_profile": sim._colony_profile(WorldSim.LOCAL_COLONY),
-		"contact_profiles": contacts,
+		"profiles": profiles,
+		"contacts": contacts,
+		"reveals": reveals,
 	}
 
 static func snapshot(sim) -> Dictionary:

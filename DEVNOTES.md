@@ -2947,3 +2947,136 @@ The AWS t4g runs the same work about 3.5–4× slower than the Mac.
   - the per-dot dictionaries `_tick_dot` builds for selection;
   - a longer tick;
   - a faster core (c7g, not a bigger t4g).
+
+## 2026-11-23 — Player colonies, stage 1: invite codes on the server (branch `session/2026-11-23-players`, not committed)
+
+**The plan (agreed with Dustan).** Each person gets an invite code, and a code founds that person's colony the first time it's used. There are 50 codes. Generate them on the server; Dustan keeps the private list. **Codes never go in this (public) repo.** A visitor with no code can only watch. A new colony starts balanced (`TEST_FIELD_BASE`) at a random spot spread away from the others. When this is ready the world gets wiped (`--fresh`). A Google/Firebase sign-in could later become a second way in to the same player record.
+
+| Stage | What | State |
+|---|---|---|
+| 1 | Codes, player records, join, chants and presence routed to the player's colony (server) | **done, tested** |
+| 2 | Empty world: no computer colonies, no autochant | **done, tested** |
+| 3 | Client: watch mode, code box, code in localStorage; shimmer, camera and word cloud follow your colony | **done, tested** |
+| 4 | Fog per player: real colours and colony ids on the wire, a revealed list per client, the client greys the rest | **done, tested** |
+| 5 | Generate 50 codes into `/home/noema/invites.txt`, add `--invites` to `noema-server.service`, wipe, deploy both halves | todo |
+
+### What stage 1 added
+- **`server.gd --invites PATH`**
+  - One code per line; blank lines and `#` lines are skipped. Codes match ignoring case and surrounding spaces.
+  - The file is re-read on every join, so codes can be added without a restart.
+  - Without `--invites` everything works as before: every client is `LOCAL_COLONY`. That is what's live now.
+- **Protocol** (in `server.gd`'s header):
+  - The client sends `{"join": code}`. The server answers `{"kind":"joined","colony":id}` or `{"kind":"join_refused","reason":"unknown code"}`.
+  - Chants from a client that hasn't joined are ignored.
+  - A code whose colony has died out (no living dots) founds a new one on the next join.
+- **Presence per colony** (`_update_presence`): a player colony is on the active clock while any open, focused client is joined to it; otherwise it's passive.
+- **`WorldSim.players`** maps code → colony and is saved with the world (added to `SAVE_STATE`; `SAVE_VERSION` unchanged).
+  - A save made before this loads with `players` left empty, so no version bump was needed.
+- **`WorldSim.spawn_player_colony()`** founds the colony:
+  - It takes the lowest colony id not yet used.
+  - It tries 64 random directions and keeps the one farthest (by angle) from every living colony's centre.
+  - It seeds `TEST_FIELD_SEED_POP` dots with the balanced field preset, then logs `player_colony` telemetry.
+- **`_process_chant_locally(text, colony)`** applies the recipe to that colony; `chant_parsed` telemetry now carries `colony`.
+
+### Verified (by Claude, isolated copy, scripted WebSocket client)
+- **Fresh world with 2 codes:**
+  - A chant before joining was ignored.
+  - `bogus` was refused.
+  - `ALPHA-1` founded colony 50, and its chant went to colony 50.
+  - `beta-2` founded colony 51.
+  - `alpha-1` rejoined colony 50.
+  - Clock telemetry showed each colony going active and passive with its own client.
+- **Stop and resume:** the server reported "2 codes, 2 used". Both codes rejoined their colonies, nothing new was founded, and a chant went to colony 51.
+- **No `--invites` (as live now):** with no join needed, the chant went to colony 0. A `join` was ignored. Colony 0 went active on connect and passive on blur, as before.
+- **Not yet tested:** the real browser client. Stage 3 teaches it to join; until then a client against an `--invites` server can only watch.
+
+### Stage 2: the empty world
+- **`WorldSim.setup_empty()`**
+  - The server calls it instead of `setup()` for a fresh world when it runs with `--invites`. A resumed save keeps whatever it holds, so the stage-5 wipe needs a fresh start once.
+  - It runs `_start_run` (telemetry `run_start` carries `empty_world: true`) and spawns nothing.
+  - It clears `known_colonies`, whose `{LOCAL_COLONY: true}` placeholder would have pushed the first player to colony 1. The first code now gets colony 0, and the colony-0 checks in the camera and chant flight already skip a missing colony.
+  - The field specs and colours are still built, so player colony *n* takes field colour *n*: 50 colours for 50 codes.
+- **`_tick_autochant` skips every player colony.** Player ids reuse the field slots 0–49, so without the skip a player's colony would have chanted that slot's lean.
+- **Unchanged without `--invites`:** the test field and autochant work as before.
+
+### Verified (stage 2, isolated copy, autochant print added to the copy only)
+- **`--invites`, fresh:**
+  - The world starts with "0 colonies, 0 entities"; specks still fall.
+  - `alpha-1` founded colony 0 and `beta-2` founded colony 1; the chant went to colony 0.
+  - No autochant fired in 32 ticks, with colony 0 active for about 12 of them. At 5 colony ticks per lean it would have fired twice.
+- **No `--invites` (control):** 50 colonies, 400 entities, and 149 autochants over the run, as before.
+
+### Stage 3: the client follows your colony
+**Wire format** (`world_stream.gd`). One stream goes to every client, so it carries what any player needs.
+- Every dot carries its colony id (`dots[6]`, a PackedInt32Array). This replaces `FLAG_OWN`, which marked colony 0 for every viewer.
+- `world_state` sends `profiles` (colony → mean CCE) and `contacts` (player colony → colonies met lately). These replace `self_profile` and `contact_profiles`, which were colony 0's.
+  - They cover each player colony (plus `LOCAL_COLONY`) and the colonies it has met.
+- The snapshot carries `invites` (from server.gd): does this server take codes?
+
+**Sim** (`world_sim.gd`)
+- `_local_contacts` became `_contacts` (colony → {other → last tick}), recorded on both sides of every blending contact; it's in `SAVE_STATE` under the new name.
+- `_current_contacts(colony)` takes the colony.
+- `_all_colony_profiles()` fills the profile cache for every colony in one pass over the dots, so streaming 50 profiles doesn't cost 50 passes.
+
+**Client** (`main.gd`, `world_mirror.gd`)
+- `_my_colony` replaces `LOCAL_COLONY` in the shimmer, camera framing, chant-flight target, local HUD and word-cloud profile (`sim.my_colony` in the mirror).
+- Locally, and against a server without codes, it stays `LOCAL_COLONY`. With codes it is the colony the server joins you to, and −1 while watching.
+- **Watching:** the code box is shown (low on the screen, the loading page's capitals), the word cloud is hidden and nothing shimmers.
+  - A code the server accepts is kept in `localStorage["noema_invite_code"]` and sent again on every (re)connect. Access is guarded for private windows.
+  - A refused code is forgotten and the box says so.
+- Changing colony recolours the old and new colony's dots (`WorldMirror.restyle_colony`).
+- The camera frames your colony once its centre is known: a new colony's centre arrives with the first tick after it's founded.
+- **Not done:** no way to leave or switch codes in the UI (clear site data, or remove the key, to switch).
+
+### Verified (stage 3)
+- **Real client** (`main.tscn` headless, test copy pointed at a local server, code taken from the command line):
+  - `alpha-1` joined colony 0. All its own dots shimmered (10, growing to 49), the camera framed the colony, the cloud showed and the box hid. The cloud drew from colony 0's profile.
+  - No code: watch mode, box shown, cloud hidden, 0 shimmering.
+  - `bogus`: refused, box says so.
+  - `beta-2` joined colony 1.
+  - Server without codes: colony 0, no box, as before.
+- **Web build in a browser** (exported from a scratch copy, local server with codes):
+  - The box shows on the empty planet; a wrong code shows "THAT CODE ISN'T RECOGNISED".
+  - `alpha-1` founded colony 0. The camera swung to it, and the box gave way to the word cloud.
+  - A page reload rejoined colony 0 by itself (localStorage) without founding a new colony.
+  - A tapped word (`altar`) was cast and parsed into colony 0.
+- **`_all_colony_profiles`** matches `_colony_profile` exactly for all 50 colonies of a 60-tick seeded field run. That run recorded 50 contact entries; colony 0 had met two colonies.
+- The headless client logs "Cannot set a buffer on a Multimesh…" once past 1,024 entities. The unchanged `main` client does the same, so it's the dummy renderer, not this change.
+- **Not checked:**
+  - a phone keyboard on the code box;
+  - the shimmer by eye (it was counted in the headless run);
+  - contact words in a world where two players meet.
+
+### Stage 4: fog per player
+Before this, fog was colony 0's, baked into the colours on the server. Every viewer saw colony 0's fog, and a surface mark took its maker's colour **as colony 0 saw it at that moment**, so a mark made in fog stayed grey forever.
+
+**Sim** (`world_sim.gd`)
+- `revealed_colonies` stays `LOCAL_COLONY`'s set: the local game's, and the one `_dot_colors` fogs by.
+- Every other player colony keeps its own set in `player_reveals` (saved), through `_revealed_for(viewer)`; a player always holds itself.
+- `_check_fog_of_war` runs the same rule for every viewer (`LOCAL_COLONY` plus every player colony): look outward from the viewer's own dots, then reveal one colony per viewer per tick, the first in `dots` order. Its early exit is now per viewer.
+  - `reveal` telemetry carries `viewer`.
+  - A reveal to `LOCAL_COLONY` recolours only that colony's dots and marks (`_update_colony_colors`); it used to recolour every dot.
+- `_dot_colors(dot, fog = true)`: `fog = false` gives the real colour.
+- `mark_surface` paints in the maker's real colour; the view greys a mark by its colony instead.
+- `is_fogged(colony)` is the local view's test.
+
+**Wire** (`world_stream.gd`)
+- Dot colours are sent unfogged.
+- Marks carry their colony (`marks[4]`).
+- `world_state.reveals` holds each player colony's found set (`LOCAL_COLONY`'s too, so a server without codes fogs exactly as before).
+
+**Client** (`world_mirror.gd`, `main.gd`)
+- The mirror keeps `my_colony`'s found set (`_refresh_fog`, recolouring colonies as they're found). `set_my_colony` recolours everything.
+- `main._entity_colors` greys any dot, block or mark that `sim.is_fogged` says to.
+- **A watcher (no code) sees everything unfogged.** Real colours are on the wire anyway, so fog only hides things in the drawing, not in the data.
+
+### Verified (stage 4)
+- **Old setup unchanged:** a seeded 150-tick field run on this branch matched `main` exactly: revealed `[0, 35]`, 23,275 dots, 2,000 marks.
+- **Per-player:** three player colonies; 1 was moved beside 0, and 2 was left far away. After 4 ticks, 0 had found 1 and 1 had found 0; 2 had found nobody and nobody had found 2.
+  - A mirror playing 1 fogs 2 only, not 0 and not itself. No colour arrived grey on the wire.
+  - As a watcher it fogs nothing.
+- **Real client headless:**
+  - With codes, a lone player sees no fog and its dots and marks shimmer.
+  - Without codes, fog as before: the others are grey, and colony 0 finds 36, then 14, as it grows.
+  - No script errors.
+- **Not checked by eye:** two players meeting and their fog lifting in a browser.
